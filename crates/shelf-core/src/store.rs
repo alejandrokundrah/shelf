@@ -49,6 +49,31 @@ impl Room {
     pub fn has_member(&self, public_key: &str) -> bool {
         self.members.iter().any(|m| m.public_key == public_key)
     }
+
+    pub fn add_member(&mut self, member: RoomMember) -> bool {
+        if self.has_member(&member.public_key) {
+            return false;
+        }
+        self.members.push(member);
+        true
+    }
+
+    pub fn add_file(&mut self, file: RoomFile) -> bool {
+        if self.files.iter().any(|existing| existing.hash == file.hash) {
+            return false;
+        }
+        self.files.push(file);
+        true
+    }
+
+    pub fn delete_file(&mut self, requester: &str, hash: &str) -> bool {
+        if !self.can_delete(requester) {
+            return false;
+        }
+        let before = self.files.len();
+        self.files.retain(|file| file.hash != hash);
+        self.files.len() != before
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -78,6 +103,23 @@ fn config_path() -> PathBuf {
 }
 
 impl Config {
+    pub fn create_room(&mut self, name: String) -> Room {
+        let id = format!("room-{}", uuid_like_id());
+        let room = Room {
+            id,
+            name,
+            owner_public_key: self.public_key.clone(),
+            members: vec![RoomMember {
+                name: self.device_name.clone(),
+                public_key: self.public_key.clone(),
+                role: RoomRole::Owner,
+            }],
+            files: Vec::new(),
+        };
+        self.rooms.push(room.clone());
+        room
+    }
+
     pub fn load_or_create() -> Result<Config> {
         let path = config_path();
         if let Ok(text) = std::fs::read_to_string(&path) {
@@ -117,6 +159,14 @@ impl Config {
     }
 }
 
+fn uuid_like_id() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    format!("{now:x}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Room, RoomFile, RoomMember, RoomRole};
@@ -153,5 +203,29 @@ mod tests {
         let room = room();
         assert!(room.has_member("student"));
         assert!(!room.has_member("unknown"));
+    }
+
+    #[test]
+    fn members_can_upload_but_only_owner_can_delete() {
+        let mut room = room();
+        assert!(room.add_member(RoomMember {
+            name: "Second student".into(),
+            public_key: "student-2".into(),
+            role: RoomRole::Member,
+        }));
+        assert!(!room.add_member(RoomMember {
+            name: "Duplicate".into(),
+            public_key: "student".into(),
+            role: RoomRole::Member,
+        }));
+        assert!(room.add_file(RoomFile {
+            hash: "def".into(),
+            name: "submission.txt".into(),
+            size: 8,
+            uploaded_by: "student".into(),
+            uploaded_at: 2,
+        }));
+        assert!(!room.delete_file("student", "def"));
+        assert!(room.delete_file("teacher", "def"));
     }
 }
