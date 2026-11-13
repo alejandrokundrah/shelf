@@ -688,6 +688,31 @@ fn audit_clock() -> String {
     )
 }
 
+fn room_qr(ui: &mut egui::Ui, room: &Room) {
+    let payload = format!("shelf://room/{}/{}", room.id, room.invite_code);
+    let Ok(code) = qrcode::QrCode::new(payload.as_bytes()) else {
+        return;
+    };
+    let modules = code.width();
+    let side = 132.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(side, side), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 8.0, Color32::WHITE);
+    let colors = code.to_colors();
+    let cell = side / modules as f32;
+    for y in 0..modules {
+        for x in 0..modules {
+            if colors[y * modules + x] == qrcode::Color::Dark {
+                let min = rect.min + vec2(x as f32 * cell, y as f32 * cell);
+                ui.painter().rect_filled(
+                    Rect::from_min_size(min, vec2(cell + 0.5, cell + 0.5)),
+                    0.0,
+                    Color32::BLACK,
+                );
+            }
+        }
+    }
+}
+
 impl ShelfApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let ctx = cc.egui_ctx.clone();
@@ -1465,6 +1490,7 @@ impl eframe::App for ShelfApp {
                                                         .size(11.5)
                                                         .color(p.accent),
                                                     );
+                                                    room_qr(ui, room);
                                                 }
                                             });
                                             let active =
