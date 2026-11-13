@@ -782,6 +782,10 @@ impl ShelfApp {
     fn drain_events(&mut self) {
         while let Ok(ev) = self.rx.try_recv() {
             match ev {
+                Event::RoomUpdated(room) => {
+                    self.record_audit(format!("Room updated: {}", room.name));
+                    self.set_status(format!("Room ready: {}", room.name));
+                }
                 Event::Ready { device_name, .. } => {
                     self.record_audit(format!("Shelf started on {device_name}"));
                     self.device_name = device_name;

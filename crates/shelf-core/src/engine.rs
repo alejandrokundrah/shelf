@@ -4,7 +4,7 @@
 use crate::channel::SecureChannel;
 use crate::pairing;
 use crate::protocol::{ItemHeader, ItemKind, CHUNK, MAX_FILE_BYTES, MAX_TEXT_BYTES};
-use crate::store::{inbox_dir, Config, PairedPeer};
+use crate::store::{inbox_dir, Config, PairedPeer, Room};
 use anyhow::{anyhow, bail, Result};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use rand::Rng;
@@ -41,6 +41,7 @@ pub enum Payload {
 }
 
 pub enum Command {
+    CreateRoom { name: String },
     StartPairing,
     CancelPairing,
     PairWith { addr: SocketAddr, code: String },
@@ -84,6 +85,7 @@ pub enum TransferDirection {
 }
 
 pub enum Event {
+    RoomUpdated(Room),
     Ready { device_name: String, public_key: String },
     Peers { paired: Vec<PeerStatus>, nearby: Vec<NearbyDevice> },
     PairingCode { code: String, seconds: u64 },
@@ -223,6 +225,18 @@ impl Shared {
     fn private_key(&self) -> Result<Vec<u8>> {
         let hex_key = self.config.lock().unwrap().private_key.clone();
         Ok(hex::decode(hex_key)?)
+    }
+
+    fn create_room(&self, name: String) {
+        let result = {
+            let mut config = self.config.lock().unwrap();
+            let room = config.create_room(name);
+            config.save().map(|()| room)
+        };
+        match result {
+            Ok(room) => self.emit(Event::RoomUpdated(room)),
+            Err(e) => self.emit(Event::Error(format!("could not create room: {e}"))),
+        }
     }
 
     fn finish_send(&self, to: &str, item: String, res: Result<()>) {
@@ -373,6 +387,7 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
             Command::Shutdown => break,
+            Command::CreateRoom { name } => shared.create_room(name),
             Command::StartPairing => {
                 let code = format!("{:06}", rand::thread_rng().gen_range(0..1_000_000u32));
                 let id = shared.next_id.fetch_add(1, Ordering::SeqCst);
