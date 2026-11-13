@@ -2,30 +2,113 @@
 
 mod clip;
 
-use eframe::egui::{self, vec2, Align, Color32, Layout, Pos2, Rect, RichText, Rounding, Stroke};
+use eframe::egui::{
+    self, vec2, Align, Align2, Color32, FontFamily, FontId, Layout, Pos2, Rect, RichText, Rounding,
+    Stroke,
+};
 use shelf_core::{
     Command, Event, Handle, ItemKind, NearbyDevice, Payload, PeerStatus, ReceivedItem, Target,
 };
+use std::cell::Cell;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 const COLLAPSED_W: f32 = 14.0;
-const EXPANDED_W: f32 = 360.0;
+const EXPANDED_W: f32 = 384.0;
 const ITEM_TTL: Duration = Duration::from_secs(3600);
 
-// macOS dark palette.
-const BG: Color32 = Color32::from_rgb(30, 30, 32);
-const CARD: Color32 = Color32::from_rgb(44, 44, 46);
-const TEXT: Color32 = Color32::from_rgb(245, 245, 247);
-const TEXT2: Color32 = Color32::from_rgb(152, 152, 157);
-const TEXT3: Color32 = Color32::from_rgb(99, 99, 102);
-const ACCENT: Color32 = Color32::from_rgb(10, 132, 255);
-const GOOD: Color32 = Color32::from_rgb(48, 209, 88);
-const RED: Color32 = Color32::from_rgb(255, 69, 58);
-const ORANGE: Color32 = Color32::from_rgb(255, 159, 10);
-const PURPLE: Color32 = Color32::from_rgb(191, 90, 242);
-const SEP: Color32 = Color32::from_rgba_premultiplied(24, 24, 24, 24);
+// The window is transparent; the glass panel floats inside it with this gap on every side,
+// which also leaves room for the soft shadow.
+const GAP: f32 = 14.0;
+const PANEL_RADIUS: f32 = 30.0;
+const CARD_RADIUS: f32 = 18.0;
+
+// ---------------------------------------------------------------------------
+// Palette (macOS Tahoe "Liquid Glass" inspired, light and dark)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+struct Pal {
+    dark: bool,
+    panel: Color32,
+    panel_edge: Color32,
+    card: Color32,
+    card_edge: Color32,
+    field: Color32,
+    text: Color32,
+    text2: Color32,
+    text3: Color32,
+    accent: Color32,
+    good: Color32,
+    red: Color32,
+    orange: Color32,
+    purple: Color32,
+    sep: Color32,
+    fill: Color32,
+    fill_hover: Color32,
+    fill_press: Color32,
+}
+
+impl Pal {
+    fn dark() -> Self {
+        Self {
+            dark: true,
+            panel: Color32::from_rgba_unmultiplied(30, 30, 34, 232),
+            panel_edge: Color32::from_white_alpha(40),
+            card: Color32::from_white_alpha(14),
+            card_edge: Color32::from_white_alpha(20),
+            field: Color32::from_black_alpha(70),
+            text: Color32::from_rgb(245, 245, 247),
+            text2: Color32::from_rgb(160, 160, 169),
+            text3: Color32::from_rgb(112, 112, 121),
+            accent: Color32::from_rgb(10, 132, 255),
+            good: Color32::from_rgb(48, 209, 88),
+            red: Color32::from_rgb(255, 69, 58),
+            orange: Color32::from_rgb(255, 159, 10),
+            purple: Color32::from_rgb(191, 90, 242),
+            sep: Color32::from_white_alpha(22),
+            fill: Color32::from_white_alpha(22),
+            fill_hover: Color32::from_white_alpha(36),
+            fill_press: Color32::from_white_alpha(50),
+        }
+    }
+
+    fn light() -> Self {
+        Self {
+            dark: false,
+            panel: Color32::from_rgba_unmultiplied(246, 246, 249, 234),
+            panel_edge: Color32::from_black_alpha(26),
+            card: Color32::from_white_alpha(185),
+            card_edge: Color32::from_black_alpha(16),
+            field: Color32::from_white_alpha(210),
+            text: Color32::from_rgb(28, 28, 30),
+            text2: Color32::from_rgb(108, 108, 118),
+            text3: Color32::from_rgb(160, 160, 168),
+            accent: Color32::from_rgb(0, 122, 255),
+            good: Color32::from_rgb(40, 205, 65),
+            red: Color32::from_rgb(255, 59, 48),
+            orange: Color32::from_rgb(255, 149, 0),
+            purple: Color32::from_rgb(175, 82, 222),
+            sep: Color32::from_black_alpha(20),
+            fill: Color32::from_black_alpha(14),
+            fill_hover: Color32::from_black_alpha(24),
+            fill_press: Color32::from_black_alpha(36),
+        }
+    }
+}
+
+thread_local! {
+    static PAL: Cell<Pal> = Cell::new(Pal::dark());
+}
+
+fn pal() -> Pal {
+    PAL.with(|p| p.get())
+}
+
+fn set_pal(p: Pal) {
+    PAL.with(|c| c.set(p));
+}
 
 fn load_icon() -> Option<egui::IconData> {
     let bytes = include_bytes!("../assets/icon.png");
@@ -73,28 +156,59 @@ fn main() -> eframe::Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Theme and small widgets
+// Theme
 // ---------------------------------------------------------------------------
 
-fn apply_mac_style(ctx: &egui::Context) {
-    // Use the system UI font on Windows when available (closest to San Francisco).
+fn semibold_family() -> FontFamily {
+    FontFamily::Name("semibold".into())
+}
+
+fn sb_font(size: f32) -> FontId {
+    FontId::new(size, semibold_family())
+}
+
+fn semibold(text: impl Into<String>, size: f32) -> RichText {
+    RichText::new(text.into()).size(size).family(semibold_family())
+}
+
+fn install_fonts(ctx: &egui::Context) {
+    // Segoe UI Variable (Windows 11) is the closest thing to San Francisco; fall back to Segoe UI.
     let mut fonts = egui::FontDefinitions::default();
-    if let Ok(bytes) = std::fs::read("C:\\Windows\\Fonts\\segoeui.ttf") {
+    let regular = ["C:\\Windows\\Fonts\\SegUIVar.ttf", "C:\\Windows\\Fonts\\segoeui.ttf"]
+        .iter()
+        .find_map(|p| std::fs::read(p).ok());
+    let bold = ["C:\\Windows\\Fonts\\seguisb.ttf", "C:\\Windows\\Fonts\\segoeuib.ttf"]
+        .iter()
+        .find_map(|p| std::fs::read(p).ok());
+
+    if let Some(bytes) = regular {
         fonts
             .font_data
             .insert("system-ui".to_owned(), egui::FontData::from_owned(bytes).into());
         fonts
             .families
-            .entry(egui::FontFamily::Proportional)
+            .entry(FontFamily::Proportional)
             .or_default()
             .insert(0, "system-ui".to_owned());
     }
+    let mut semi: Vec<String> = Vec::new();
+    if let Some(bytes) = bold {
+        fonts
+            .font_data
+            .insert("system-ui-semibold".to_owned(), egui::FontData::from_owned(bytes).into());
+        semi.push("system-ui-semibold".to_owned());
+    }
+    // Always end with the regular proportional stack so every glyph still resolves.
+    semi.extend(fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default());
+    fonts.families.insert(semibold_family(), semi);
     ctx.set_fonts(fonts);
+}
 
-    use egui::{FontId, TextStyle};
+fn apply_style(ctx: &egui::Context, p: Pal) {
+    use egui::TextStyle;
     let mut style = (*ctx.style()).clone();
     style.text_styles = [
-        (TextStyle::Heading, FontId::proportional(17.0)),
+        (TextStyle::Heading, FontId::proportional(20.0)),
         (TextStyle::Body, FontId::proportional(13.0)),
         (TextStyle::Button, FontId::proportional(13.0)),
         (TextStyle::Small, FontId::proportional(11.0)),
@@ -103,69 +217,65 @@ fn apply_mac_style(ctx: &egui::Context) {
     .into();
     style.spacing.item_spacing = vec2(8.0, 10.0);
     style.spacing.button_padding = vec2(12.0, 5.0);
-    style.spacing.interact_size.y = 24.0;
+    style.spacing.interact_size.y = 26.0;
+    style.spacing.scroll = egui::style::ScrollStyle::floating();
 
-    style.visuals = egui::Visuals::dark();
+    style.visuals = if p.dark { egui::Visuals::dark() } else { egui::Visuals::light() };
     let v = &mut style.visuals;
-    let r = Rounding::same(6.0);
-    v.panel_fill = BG;
-    v.window_fill = CARD;
-    v.window_stroke = Stroke::new(1.0_f32, SEP);
-    v.window_rounding = Rounding::same(10.0);
-    v.menu_rounding = Rounding::same(8.0);
-    v.extreme_bg_color = Color32::from_rgb(24, 24, 26);
-    v.faint_bg_color = CARD;
-    v.hyperlink_color = ACCENT;
-    v.selection.bg_fill = ACCENT;
-    v.selection.stroke = Stroke::new(1.0_f32, Color32::WHITE);
+    let r = Rounding::same(10.0);
+    v.panel_fill = Color32::TRANSPARENT;
+    v.window_fill = p.panel;
+    v.window_stroke = Stroke::new(1.0_f32, p.panel_edge);
+    v.window_rounding = Rounding::same(18.0);
+    v.menu_rounding = Rounding::same(14.0);
+    v.extreme_bg_color = p.field;
+    v.faint_bg_color = p.card;
+    v.hyperlink_color = p.accent;
+    v.selection.bg_fill = p.accent.gamma_multiply(0.45);
+    v.selection.stroke = Stroke::new(1.0_f32, p.accent);
+    v.override_text_color = None;
 
-    v.widgets.noninteractive.bg_fill = CARD;
-    v.widgets.noninteractive.weak_bg_fill = CARD;
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, SEP);
-    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, TEXT);
-    v.widgets.noninteractive.rounding = r;
-    v.widgets.noninteractive.expansion = 0.0;
-
-    v.widgets.inactive.bg_fill = Color32::from_white_alpha(24);
-    v.widgets.inactive.weak_bg_fill = Color32::from_white_alpha(24);
-    v.widgets.inactive.bg_stroke = Stroke::NONE;
-    v.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, TEXT);
-    v.widgets.inactive.rounding = r;
-    v.widgets.inactive.expansion = 0.0;
-
-    v.widgets.hovered.bg_fill = Color32::from_white_alpha(38);
-    v.widgets.hovered.weak_bg_fill = Color32::from_white_alpha(38);
-    v.widgets.hovered.bg_stroke = Stroke::NONE;
-    v.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, TEXT);
-    v.widgets.hovered.rounding = r;
-    v.widgets.hovered.expansion = 0.0;
-
-    v.widgets.active.bg_fill = Color32::from_white_alpha(56);
-    v.widgets.active.weak_bg_fill = Color32::from_white_alpha(56);
-    v.widgets.active.bg_stroke = Stroke::NONE;
-    v.widgets.active.fg_stroke = Stroke::new(1.0_f32, TEXT);
-    v.widgets.active.rounding = r;
-    v.widgets.active.expansion = 0.0;
-
-    v.widgets.open.bg_fill = Color32::from_white_alpha(38);
-    v.widgets.open.weak_bg_fill = Color32::from_white_alpha(38);
-    v.widgets.open.bg_stroke = Stroke::NONE;
-    v.widgets.open.fg_stroke = Stroke::new(1.0_f32, TEXT);
-    v.widgets.open.rounding = r;
-    v.widgets.open.expansion = 0.0;
+    let fg = Stroke::new(1.0_f32, p.text);
+    for (w, fill) in [
+        (&mut v.widgets.noninteractive, p.card),
+        (&mut v.widgets.inactive, p.fill),
+        (&mut v.widgets.hovered, p.fill_hover),
+        (&mut v.widgets.active, p.fill_press),
+        (&mut v.widgets.open, p.fill_hover),
+    ] {
+        w.bg_fill = fill;
+        w.weak_bg_fill = fill;
+        w.bg_stroke = Stroke::NONE;
+        w.fg_stroke = fg;
+        w.rounding = r;
+        w.expansion = 0.0;
+    }
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, p.card_edge);
 
     ctx.set_style(style);
 }
 
+fn detect_dark(ctx: &egui::Context) -> bool {
+    ctx.input(|i| i.raw.system_theme)
+        .map(|t| t == egui::Theme::Dark)
+        .unwrap_or(true)
+}
+
+// ---------------------------------------------------------------------------
+// Small widgets
+// ---------------------------------------------------------------------------
+
 /// A rounded "grouped" container, like the inset lists in macOS System Settings.
 fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let p = pal();
     egui::Frame::none()
-        .fill(CARD)
-        .rounding(10.0)
-        .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+        .fill(p.card)
+        .stroke(Stroke::new(1.0_f32, p.card_edge))
+        .rounding(CARD_RADIUS)
+        .inner_margin(egui::Margin::symmetric(14.0, 12.0))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing.y = 6.0;
+            ui.spacing_mut().item_spacing.y = 8.0;
             add(ui)
         })
         .inner
@@ -173,11 +283,12 @@ fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
 
 fn hairline(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), egui::Sense::hover());
-    ui.painter().rect_filled(rect, 0.0, SEP);
+    ui.painter().rect_filled(rect, 0.0, pal().sep);
 }
 
 fn section_label(ui: &mut egui::Ui, text: &str) {
-    ui.label(RichText::new(text.to_uppercase()).size(11.0).color(TEXT2));
+    ui.add_space(2.0);
+    ui.label(semibold(text, 12.5).color(pal().text2));
 }
 
 fn status_dot(ui: &mut egui::Ui, color: Color32) {
@@ -185,68 +296,149 @@ fn status_dot(ui: &mut egui::Ui, color: Color32) {
     ui.painter().circle_filled(rect.center(), 4.0, color);
 }
 
-fn quit_dot(ui: &mut egui::Ui) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(13.0, 13.0), egui::Sense::click());
+fn status_pill(ui: &mut egui::Ui, text: &str) {
+    let p = pal();
+    let bad = text.contains("Could not") || text.contains("failed") || text.contains("rror");
+    egui::Frame::none()
+        .fill(p.fill)
+        .rounding(16.0)
+        .inner_margin(egui::Margin::symmetric(12.0, 7.0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                status_dot(ui, if bad { p.red } else { p.accent });
+                ui.label(RichText::new(shorten(text, 46)).size(12.0).color(p.text2));
+            });
+        });
+}
+
+/// Round glass button used in the header. Returns the rect so the caller can paint a glyph.
+fn glass_circle(ui: &mut egui::Ui, active: bool) -> (Rect, egui::Response) {
+    let p = pal();
+    let (rect, resp) = ui.allocate_exact_size(vec2(30.0, 30.0), egui::Sense::click());
+    let fill = if active {
+        p.accent
+    } else if resp.is_pointer_button_down_on() {
+        p.fill_press
+    } else if resp.hovered() {
+        p.fill_hover
+    } else {
+        p.fill
+    };
+    ui.painter().circle_filled(rect.center(), 15.0, fill);
+    (rect, resp.on_hover_cursor(egui::CursorIcon::PointingHand))
+}
+
+fn close_button(ui: &mut egui::Ui) -> egui::Response {
+    let (rect, resp) = glass_circle(ui, false);
     let c = rect.center();
-    ui.painter().circle_filled(c, 6.5, Color32::from_rgb(255, 95, 87));
-    if resp.hovered() {
-        let s = Stroke::new(1.3_f32, Color32::from_rgb(90, 20, 15));
-        ui.painter().line_segment([c + vec2(-2.5, -2.5), c + vec2(2.5, 2.5)], s);
-        ui.painter().line_segment([c + vec2(2.5, -2.5), c + vec2(-2.5, 2.5)], s);
+    let col = if resp.hovered() { pal().text } else { pal().text2 };
+    let s = Stroke::new(1.6_f32, col);
+    ui.painter().line_segment([c + vec2(-4.0, -4.0), c + vec2(4.0, 4.0)], s);
+    ui.painter().line_segment([c + vec2(4.0, -4.0), c + vec2(-4.0, 4.0)], s);
+    resp.on_hover_text("Quit Shelf")
+}
+
+fn pin_button(ui: &mut egui::Ui, pinned: &mut bool) -> egui::Response {
+    let (rect, resp) = glass_circle(ui, *pinned);
+    if resp.clicked() {
+        *pinned = !*pinned;
     }
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text("Quit Shelf")
+    let c = rect.center();
+    let col = if *pinned { Color32::WHITE } else { pal().text2 };
+    let s = Stroke::new(1.5_f32, col);
+    let p = ui.painter();
+    p.rect_stroke(Rect::from_center_size(c + vec2(0.0, -3.5), vec2(6.0, 8.0)), 2.0, s);
+    p.line_segment([c + vec2(-5.0, 1.5), c + vec2(5.0, 1.5)], s);
+    p.line_segment([c + vec2(0.0, 1.5), c + vec2(0.0, 7.0)], s);
+    resp.on_hover_text(if *pinned { "Pinned open" } else { "Keep open" })
 }
 
 /// macOS-style switch.
 fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
-    let (rect, mut resp) = ui.allocate_exact_size(vec2(38.0, 22.0), egui::Sense::click());
+    let p = pal();
+    let (rect, mut resp) = ui.allocate_exact_size(vec2(42.0, 25.0), egui::Sense::click());
     if resp.clicked() {
         *on = !*on;
         resp.mark_changed();
     }
     let t = ui.ctx().animate_bool_responsive(resp.id, *on);
-    let track = Color32::from_rgb(88, 88, 92).lerp_to_gamma(ACCENT, t);
-    let x = egui::lerp((rect.left() + 11.0)..=(rect.right() - 11.0), t);
-    let p = ui.painter();
-    p.rect_filled(rect, 11.0, track);
-    p.circle_filled(Pos2::new(x, rect.center().y + 0.5), 9.0, Color32::from_black_alpha(60));
-    p.circle_filled(Pos2::new(x, rect.center().y), 9.0, Color32::WHITE);
+    let off_track = if p.dark { Color32::from_rgb(78, 78, 84) } else { Color32::from_rgb(214, 214, 220) };
+    let track = off_track.lerp_to_gamma(p.good, t);
+    let x = egui::lerp((rect.left() + 12.5)..=(rect.right() - 12.5), t);
+    let painter = ui.painter();
+    painter.rect_filled(rect, 12.5, track);
+    painter.circle_filled(Pos2::new(x, rect.center().y + 1.0), 10.5, Color32::from_black_alpha(46));
+    painter.circle_filled(Pos2::new(x, rect.center().y), 10.5, Color32::WHITE);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-fn row_toggle(ui: &mut egui::Ui, label: &str, value: &mut bool) {
+fn row_toggle(ui: &mut egui::Ui, label: &str, hint: &str, value: &mut bool) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(label).color(TEXT));
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 1.0;
+            ui.label(RichText::new(label).size(13.5).color(pal().text));
+            ui.label(RichText::new(hint).size(11.5).color(pal().text2));
+        });
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             toggle(ui, value);
         });
     });
 }
 
-fn primary_button(text: &str) -> egui::Button<'static> {
-    egui::Button::new(RichText::new(text.to_owned()).size(13.0).color(Color32::WHITE))
-        .fill(ACCENT)
-        .rounding(7.0)
+#[derive(Clone, Copy)]
+enum Look {
+    Primary,
+    Glass,
+    Tint(Color32),
 }
 
-fn pill_button(text: &str) -> egui::Button<'static> {
-    egui::Button::new(RichText::new(text.to_owned()).size(12.0).color(Color32::WHITE))
-        .fill(ACCENT)
-        .rounding(11.0)
-}
-
-fn link_button(ui: &mut egui::Ui, text: &str, color: Color32) -> egui::Response {
-    ui.add(egui::Button::new(RichText::new(text).size(12.0).color(color)).frame(false))
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
+/// Capsule button. `width` of `None` hugs the label.
+fn capsule(
+    ui: &mut egui::Ui,
+    label: &str,
+    look: Look,
+    height: f32,
+    width: Option<f32>,
+    enabled: bool,
+) -> egui::Response {
+    let p = pal();
+    let font = sb_font(if height >= 34.0 { 14.0 } else { 12.0 });
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), Color32::WHITE);
+    let w = width.unwrap_or(galley.size().x + height * 0.95);
+    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, height), sense);
+    let down = enabled && resp.is_pointer_button_down_on();
+    let hot = enabled && resp.hovered();
+    let (mut fill, fg) = match look {
+        Look::Primary => (p.accent, Color32::WHITE),
+        Look::Glass => (
+            if down { p.fill_press } else if hot { p.fill_hover } else { p.fill },
+            p.text,
+        ),
+        Look::Tint(c) => (c.gamma_multiply(if down { 0.34 } else if hot { 0.26 } else { 0.16 }), c),
+    };
+    if let Look::Primary = look {
+        if down {
+            fill = fill.lerp_to_gamma(Color32::BLACK, 0.18);
+        } else if hot {
+            fill = fill.lerp_to_gamma(Color32::WHITE, 0.14);
+        }
+    }
+    let (fill, fg) = if enabled { (fill, fg) } else { (fill.gamma_multiply(0.45), fg.gamma_multiply(0.55)) };
+    ui.painter().rect_filled(rect, rect.height() / 2.0, fill);
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, label, font, fg);
+    if enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp }
 }
 
 fn thin_progress(ui: &mut egui::Ui, frac: f32) {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 4.0), egui::Sense::hover());
-    ui.painter().rect_filled(rect, 2.0, Color32::from_white_alpha(30));
+    let p = pal();
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 5.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 2.5, p.fill);
     let mut fill = rect;
     fill.set_width(rect.width() * frac.clamp(0.0, 1.0));
-    ui.painter().rect_filled(fill, 2.0, ACCENT);
+    ui.painter().rect_filled(fill, 2.5, p.accent);
 }
 
 fn rounded_rect_path(rect: Rect, r: f32) -> Vec<Pos2> {
@@ -268,69 +460,115 @@ fn rounded_rect_path(rect: Rect, r: f32) -> Vec<Pos2> {
     pts
 }
 
+/// Down arrow into a tray.
+fn arrow_tray(painter: &egui::Painter, c: Pos2, color: Color32) {
+    let s = Stroke::new(2.0_f32, color);
+    painter.line_segment([c + vec2(0.0, -8.0), c + vec2(0.0, 4.0)], s);
+    painter.line_segment([c + vec2(-5.0, -1.0), c + vec2(0.0, 4.0)], s);
+    painter.line_segment([c + vec2(5.0, -1.0), c + vec2(0.0, 4.0)], s);
+    painter.line_segment([c + vec2(-8.0, 9.0), c + vec2(8.0, 9.0)], s);
+}
+
 fn drop_zone(ui: &mut egui::Ui, hovering: bool) {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 104.0), egui::Sense::hover());
-    let (fill, line) = if hovering {
-        (Color32::from_rgba_unmultiplied(10, 132, 255, 40), ACCENT)
-    } else {
-        (Color32::from_white_alpha(8), Color32::from_white_alpha(70))
-    };
-    let p = ui.painter();
-    p.rect_filled(rect, 12.0, fill);
-    let path = rounded_rect_path(rect.shrink(0.75), 12.0);
-    p.extend(egui::Shape::dashed_line(&path, Stroke::new(1.5_f32, line), 6.0, 5.0));
+    let p = pal();
+    let t = ui.ctx().animate_bool_responsive(egui::Id::new("drop_zone_hover"), hovering);
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 128.0), egui::Sense::hover());
+    let fill = p.card.lerp_to_gamma(p.accent.gamma_multiply(0.16), t);
+    let line = p.text3.gamma_multiply(0.7).lerp_to_gamma(p.accent, t);
+    let painter = ui.painter();
+    painter.rect_filled(rect, 22.0, fill);
+    let path = rounded_rect_path(rect.shrink(1.0), 22.0);
+    painter.extend(egui::Shape::dashed_line(&path, Stroke::new(1.4_f32, line), 7.0, 6.0));
 
-    // Down arrow into a tray.
-    let c = rect.center() + vec2(0.0, -20.0);
-    let s = Stroke::new(2.0_f32, if hovering { ACCENT } else { TEXT2 });
-    p.line_segment([c + vec2(0.0, -9.0), c + vec2(0.0, 5.0)], s);
-    p.line_segment([c + vec2(-5.0, 0.0), c + vec2(0.0, 5.0)], s);
-    p.line_segment([c + vec2(5.0, 0.0), c + vec2(0.0, 5.0)], s);
-    p.line_segment([c + vec2(-9.0, 10.0), c + vec2(9.0, 10.0)], s);
+    let c = rect.center() + vec2(0.0, -22.0);
+    let badge = p.accent.gamma_multiply(0.16 + 0.14 * t);
+    painter.circle_filled(c, 22.0, badge);
+    arrow_tray(painter, c, p.accent);
 
-    p.text(
-        rect.center() + vec2(0.0, 16.0),
-        egui::Align2::CENTER_CENTER,
-        if hovering { "Release to send" } else { "Drop files to send" },
-        egui::FontId::proportional(14.0),
-        if hovering { ACCENT } else { TEXT },
+    painter.text(
+        rect.center() + vec2(0.0, 17.0),
+        Align2::CENTER_CENTER,
+        if hovering { "Release to send" } else { "Drop to send" },
+        sb_font(15.0),
+        if hovering { p.accent } else { p.text },
     );
-    p.text(
-        rect.center() + vec2(0.0, 34.0),
-        egui::Align2::CENTER_CENTER,
-        "They appear on your other PCs",
-        egui::FontId::proportional(11.5),
-        TEXT2,
+    painter.text(
+        rect.center() + vec2(0.0, 38.0),
+        Align2::CENTER_CENTER,
+        "Files appear on your other PCs",
+        FontId::proportional(11.5),
+        p.text2,
     );
 }
 
 fn draw_kind_icon(painter: &egui::Painter, rect: Rect, kind: &ItemKind) {
+    let p = pal();
     let color = match kind {
-        ItemKind::File => ACCENT,
-        ItemKind::Text => ORANGE,
-        ItemKind::Image => PURPLE,
+        ItemKind::File => p.accent,
+        ItemKind::Text => p.orange,
+        ItemKind::Image => p.purple,
     };
-    painter.rect_filled(rect, 9.0, color);
+    painter.rect_filled(rect, 12.0, color);
+    // Soft top sheen so the tile reads as glass rather than flat paint.
+    let sheen = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.center().y));
+    painter.rect_filled(
+        sheen,
+        Rounding { nw: 12.0, ne: 12.0, sw: 0.0, se: 0.0 },
+        Color32::from_white_alpha(22),
+    );
     let c = rect.center();
-    let s = Stroke::new(1.7_f32, Color32::WHITE);
+    let s = Stroke::new(1.8_f32, Color32::WHITE);
     match kind {
         ItemKind::File => {
-            painter.rect_stroke(Rect::from_center_size(c, vec2(12.0, 16.0)), 2.5, s);
+            painter.rect_stroke(Rect::from_center_size(c, vec2(13.0, 17.0)), 3.0, s);
             painter.line_segment([c + vec2(-3.0, -2.0), c + vec2(3.0, -2.0)], s);
             painter.line_segment([c + vec2(-3.0, 2.5), c + vec2(3.0, 2.5)], s);
         }
         ItemKind::Text => {
-            painter.line_segment([c + vec2(-7.0, -5.5), c + vec2(7.0, -5.5)], s);
-            painter.line_segment([c + vec2(-7.0, 0.0), c + vec2(7.0, 0.0)], s);
-            painter.line_segment([c + vec2(-7.0, 5.5), c + vec2(2.0, 5.5)], s);
+            painter.line_segment([c + vec2(-8.0, -6.0), c + vec2(8.0, -6.0)], s);
+            painter.line_segment([c + vec2(-8.0, 0.0), c + vec2(8.0, 0.0)], s);
+            painter.line_segment([c + vec2(-8.0, 6.0), c + vec2(2.0, 6.0)], s);
         }
         ItemKind::Image => {
-            painter.rect_stroke(Rect::from_center_size(c, vec2(18.0, 14.0)), 3.0, s);
-            painter.circle_filled(c + vec2(-3.5, -2.0), 1.8, Color32::WHITE);
+            painter.rect_stroke(Rect::from_center_size(c, vec2(20.0, 15.0)), 3.5, s);
+            painter.circle_filled(c + vec2(-4.0, -2.0), 1.9, Color32::WHITE);
             painter.add(egui::Shape::line(
-                vec![c + vec2(-7.0, 5.0), c + vec2(-1.5, 0.5), c + vec2(1.5, 3.0), c + vec2(4.0, 0.5), c + vec2(7.0, 4.5)],
+                vec![c + vec2(-8.0, 5.5), c + vec2(-2.0, 0.5), c + vec2(1.5, 3.5), c + vec2(4.5, 0.5), c + vec2(8.0, 5.0)],
                 s,
             ));
+        }
+    }
+}
+
+/// Round avatar with a little monitor and an online/offline badge.
+fn draw_device_icon(painter: &egui::Painter, rect: Rect, online: bool) {
+    let p = pal();
+    let c = rect.center();
+    painter.circle_filled(c, rect.width() / 2.0, p.fill);
+    let col = if online { p.text } else { p.text3 };
+    let s = Stroke::new(1.5_f32, col);
+    painter.rect_stroke(Rect::from_center_size(c + vec2(0.0, -1.5), vec2(15.0, 10.0)), 2.5, s);
+    painter.line_segment([c + vec2(-4.0, 7.0), c + vec2(4.0, 7.0)], s);
+    let badge = c + vec2(9.5, 9.5);
+    let ring = if p.dark { Color32::from_rgb(40, 40, 44) } else { Color32::from_rgb(244, 244, 247) };
+    painter.circle_filled(badge, 5.5, ring);
+    painter.circle_filled(badge, 3.8, if online { p.good } else { p.text3 });
+}
+
+/// The six pairing digits as separate glass tiles.
+fn code_tiles(ui: &mut egui::Ui, code: &str) {
+    let p = pal();
+    let gap = 6.0;
+    let tile_w = ((ui.available_width() - gap * 5.0) / 6.0).clamp(30.0, 46.0);
+    let total = tile_w * 6.0 + gap * 5.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(total, 56.0), egui::Sense::hover());
+    let digits: Vec<char> = code.chars().take(6).collect();
+    for i in 0..6 {
+        let x = rect.left() + i as f32 * (tile_w + gap);
+        let r = Rect::from_min_size(Pos2::new(x, rect.top()), vec2(tile_w, rect.height()));
+        ui.painter().rect_filled(r, 14.0, p.fill);
+        if let Some(d) = digits.get(i) {
+            ui.painter().text(r.center(), Align2::CENTER_CENTER, d.to_string(), sb_font(28.0), p.text);
         }
     }
 }
@@ -384,6 +622,8 @@ struct ShelfApp {
     auto_copy: bool,
     pinned: bool,
 
+    styled_dark: Option<bool>,
+
     cur_w: f32,
     applied_w: f32,
     positioned: bool,
@@ -399,7 +639,7 @@ impl ShelfApp {
             shelf_core::start(move || wake_ctx.request_repaint()).expect("failed to start Shelf");
         let (clip_tx, clip_rx) = channel();
         sweep_inbox();
-        apply_mac_style(&ctx);
+        install_fonts(&ctx);
         let now = Instant::now();
         Self {
             ctx,
@@ -418,6 +658,7 @@ impl ShelfApp {
             pair_dialog: None,
             auto_copy: true,
             pinned: false,
+            styled_dark: None,
             cur_w: COLLAPSED_W,
             applied_w: -1.0,
             positioned: false,
@@ -518,7 +759,7 @@ impl ShelfApp {
             return;
         };
         let target_w = if expanded { EXPANDED_W } else { COLLAPSED_W };
-        let h = (monitor.y - 160.0).clamp(420.0, 680.0);
+        let h = (monitor.y - 120.0).clamp(460.0, 760.0);
         if (self.cur_w - target_w).abs() < 0.5 {
             self.cur_w = target_w;
         } else {
@@ -533,18 +774,6 @@ impl ShelfApp {
             )));
             self.applied_w = self.cur_w;
             self.positioned = true;
-        }
-    }
-
-    fn target_label(&self) -> String {
-        match &self.target {
-            Target::All => "All paired devices".to_string(),
-            Target::Peer(k) => self
-                .paired
-                .iter()
-                .find(|p| &p.public_key == k)
-                .map(|p| p.name.clone())
-                .unwrap_or_else(|| "Unknown".to_string()),
         }
     }
 }
@@ -595,12 +824,21 @@ fn shorten(s: &str, max: usize) -> String {
 }
 
 impl eframe::App for ShelfApp {
-    // Transparent window so the panel can have rounded corners.
+    // Transparent window so the glass panel can float with rounded corners.
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         egui::Rgba::TRANSPARENT.to_array()
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Follow the system light/dark setting.
+        let dark = detect_dark(ctx);
+        let p = if dark { Pal::dark() } else { Pal::light() };
+        set_pal(p);
+        if self.styled_dark != Some(dark) {
+            apply_style(ctx, p);
+            self.styled_dark = Some(dark);
+        }
+
         self.drain_events();
 
         // Files dropped onto the shelf are sent to the chosen device(s).
@@ -651,310 +889,417 @@ impl eframe::App for ShelfApp {
         let nearby = self.nearby.clone();
         let mut actions: Vec<Action> = Vec::new();
 
-        let frame = if collapsed {
-            egui::Frame::none().inner_margin(egui::Margin::ZERO)
-        } else {
-            egui::Frame::none()
-                .fill(BG)
-                .rounding(Rounding { nw: 12.0, sw: 12.0, ne: 0.0, se: 0.0 })
-                .stroke(Stroke::new(1.0_f32, Color32::from_white_alpha(28)))
-                .inner_margin(egui::Margin::same(14.0))
-        };
+        egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+            let full = ui.max_rect();
 
-        egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
             if collapsed {
-                // A slim blue grabber at the screen edge.
-                let rect = ui.max_rect();
+                // A slim grabber at the screen edge; it turns blue when something is waiting.
                 let pill = Rect::from_center_size(
-                    Pos2::new(rect.right() - 6.0, rect.center().y),
-                    vec2(5.0, 72.0),
+                    Pos2::new(full.right() - 6.0, full.center().y),
+                    vec2(5.0, 76.0),
                 );
-                ui.painter().rect_filled(pill, 2.5, ACCENT);
+                let col = if self.items.is_empty() {
+                    if p.dark { Color32::from_white_alpha(120) } else { Color32::from_black_alpha(90) }
+                } else {
+                    p.accent
+                };
+                ui.painter().rect_filled(pill, 2.5, col);
                 return;
             }
-            ui.set_min_width(EXPANDED_W - 28.0);
 
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                // Header.
-                ui.horizontal(|ui| {
-                    if quit_dot(ui).clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                    ui.label(RichText::new("Shelf").size(17.0).strong().color(TEXT));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(
-                            RichText::new(shorten(&self.device_name, 22)).size(11.5).color(TEXT2),
-                        );
-                    });
-                });
-                if !self.status.is_empty() {
-                    ui.label(RichText::new(self.status.clone()).size(11.5).color(TEXT2));
-                }
-                if let Some((label, pct)) = &self.progress {
-                    ui.label(
-                        RichText::new(format!("{} ({}%)", shorten(label, 34), pct))
-                            .size(11.5)
-                            .color(TEXT2),
-                    );
-                    thin_progress(ui, *pct as f32 / 100.0);
-                }
+            // The floating glass panel.
+            let panel = Rect::from_min_max(full.min + vec2(GAP, GAP), full.max - vec2(GAP, GAP));
+            let shadow = egui::Shadow {
+                offset: vec2(0.0, 8.0),
+                blur: 22.0,
+                spread: 0.0,
+                color: Color32::from_black_alpha(if p.dark { 120 } else { 55 }),
+            };
+            ui.painter().add(shadow.as_shape(panel, PANEL_RADIUS));
+            ui.painter().rect_filled(panel, PANEL_RADIUS, p.panel);
+            // Inner highlight along the rim, like light catching the edge of the glass.
+            ui.painter().rect_stroke(
+                panel.shrink(0.5),
+                PANEL_RADIUS,
+                Stroke::new(1.0_f32, p.panel_edge),
+            );
+            ui.painter().rect_stroke(
+                panel.shrink(1.5),
+                PANEL_RADIUS - 1.0,
+                Stroke::new(
+                    1.0_f32,
+                    if p.dark { Color32::from_white_alpha(8) } else { Color32::from_white_alpha(120) },
+                ),
+            );
 
-                // Drop zone and clipboard.
-                drop_zone(ui, hovering_files);
-                if ui
-                    .add_sized([ui.available_width(), 30.0], primary_button("Send Clipboard"))
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .clicked()
-                {
-                    actions.push(Action::SendClipboard);
-                }
-
-                // Settings.
-                let label = self.target_label();
-                card(ui, |ui| {
+            let inner = panel.shrink2(vec2(16.0, 16.0));
+            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(inner), |ui| {
+                ui.set_clip_rect(inner.expand2(vec2(2.0, 0.0)));
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    // Header.
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("Send to").color(TEXT));
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            ui.label(semibold("Shelf", 22.0).color(p.text));
+                            if !self.device_name.is_empty() {
+                                ui.label(
+                                    RichText::new(shorten(&self.device_name, 26))
+                                        .size(12.0)
+                                        .color(p.text2),
+                                );
+                            }
+                        });
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            egui::ComboBox::from_id_salt("send_to")
-                                .selected_text(label)
-                                .width(170.0)
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(
-                                        &mut self.target,
-                                        Target::All,
-                                        "All paired devices",
-                                    );
-                                    for p in &paired {
-                                        ui.selectable_value(
-                                            &mut self.target,
-                                            Target::Peer(p.public_key.clone()),
-                                            p.name.clone(),
-                                        );
-                                    }
-                                });
+                            if close_button(ui).clicked() {
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            }
+                            pin_button(ui, &mut self.pinned);
                         });
                     });
-                    hairline(ui);
-                    row_toggle(ui, "Auto-copy received", &mut self.auto_copy);
-                    hairline(ui);
-                    row_toggle(ui, "Keep open", &mut self.pinned);
-                });
 
-                // Devices and pairing.
-                egui::CollapsingHeader::new(RichText::new("DEVICES").size(11.0).color(TEXT2))
-                    .default_open(
-                        paired.is_empty() || self.my_code.is_some() || self.pair_dialog.is_some(),
+                    if !self.status.is_empty() {
+                        status_pill(ui, &self.status);
+                    }
+                    if let Some((label, pct)) = &self.progress {
+                        ui.label(
+                            RichText::new(format!("{} ({}%)", shorten(label, 34), pct))
+                                .size(11.5)
+                                .color(p.text2),
+                        );
+                        thin_progress(ui, *pct as f32 / 100.0);
+                    }
+
+                    // Drop zone and clipboard.
+                    drop_zone(ui, hovering_files);
+                    if capsule(
+                        ui,
+                        "Send Clipboard",
+                        Look::Primary,
+                        38.0,
+                        Some(ui.available_width()),
+                        true,
                     )
-                    .show(ui, |ui| {
-                        if paired.is_empty() && nearby.is_empty() {
-                            ui.label(
-                                RichText::new(
-                                    "No devices yet. Open Shelf on your other PC, then pair below.",
-                                )
-                                .size(12.0)
-                                .color(TEXT2),
-                            );
-                        }
-                        if !paired.is_empty() {
-                            card(ui, |ui| {
-                                for (i, p) in paired.iter().enumerate() {
-                                    if i > 0 {
-                                        hairline(ui);
-                                    }
-                                    let online = p.addr.is_some();
-                                    ui.horizontal(|ui| {
-                                        status_dot(ui, if online { GOOD } else { TEXT3 });
-                                        ui.label(RichText::new(shorten(&p.name, 22)).color(TEXT));
-                                        ui.label(
-                                            RichText::new(if online { "Online" } else { "Offline" })
-                                                .size(11.5)
-                                                .color(TEXT2),
-                                        );
-                                        ui.with_layout(
-                                            Layout::right_to_left(Align::Center),
-                                            |ui| {
-                                                if link_button(ui, "Remove", RED).clicked() {
-                                                    actions.push(Action::Unpair(
-                                                        p.public_key.clone(),
-                                                    ));
-                                                }
-                                            },
-                                        );
-                                    });
-                                }
-                            });
-                        }
-                        if !nearby.is_empty() {
-                            section_label(ui, "Nearby, not paired");
-                            card(ui, |ui| {
-                                for (i, d) in nearby.iter().enumerate() {
-                                    if i > 0 {
-                                        hairline(ui);
-                                    }
-                                    ui.horizontal(|ui| {
-                                        ui.label(RichText::new(shorten(&d.name, 24)).color(TEXT));
-                                        ui.with_layout(
-                                            Layout::right_to_left(Align::Center),
-                                            |ui| {
-                                                if ui.add(pill_button("Pair")).clicked() {
-                                                    actions.push(Action::OpenPair(d.clone()));
-                                                }
-                                            },
-                                        );
-                                    });
-                                }
-                            });
-                        }
+                    .clicked()
+                    {
+                        actions.push(Action::SendClipboard);
+                    }
 
-                        if let Some((code, until)) = &self.my_code {
-                            let left = until.saturating_duration_since(Instant::now()).as_secs();
-                            let spaced = format!("{} {}", &code[..3], &code[3..]);
-                            card(ui, |ui| {
-                                ui.vertical_centered(|ui| {
-                                    ui.label(
-                                        RichText::new("Enter this code on the other PC")
-                                            .size(12.0)
-                                            .color(TEXT2),
-                                    );
-                                    ui.label(
-                                        RichText::new(spaced)
-                                            .monospace()
-                                            .size(32.0)
-                                            .strong()
-                                            .color(TEXT),
-                                    );
-                                    ui.label(
-                                        RichText::new(format!("Expires in {left}s"))
-                                            .size(11.5)
-                                            .color(TEXT3),
-                                    );
-                                    if link_button(ui, "Cancel", ACCENT).clicked() {
-                                        actions.push(Action::CancelPairing);
+                    // Settings.
+                    card(ui, |ui| {
+                        ui.label(RichText::new("Send to").size(13.5).color(p.text));
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                            let all = matches!(self.target, Target::All);
+                            let look = if all { Look::Primary } else { Look::Glass };
+                            if capsule(ui, "All devices", look, 28.0, None, true).clicked() {
+                                self.target = Target::All;
+                            }
+                            for dev in &paired {
+                                let selected =
+                                    matches!(&self.target, Target::Peer(k) if k == &dev.public_key);
+                                let look = if selected { Look::Primary } else { Look::Glass };
+                                if capsule(ui, &shorten(&dev.name, 18), look, 28.0, None, true)
+                                    .clicked()
+                                {
+                                    self.target = Target::Peer(dev.public_key.clone());
+                                }
+                            }
+                        });
+                        hairline(ui);
+                        row_toggle(
+                            ui,
+                            "Auto-copy received",
+                            "Ready to paste with Ctrl+V",
+                            &mut self.auto_copy,
+                        );
+                    });
+
+                    // Devices and pairing.
+                    egui::CollapsingHeader::new(semibold("Devices", 12.5).color(p.text2))
+                        .default_open(
+                            paired.is_empty() || self.my_code.is_some() || self.pair_dialog.is_some(),
+                        )
+                        .show(ui, |ui| {
+                            if paired.is_empty() && nearby.is_empty() {
+                                ui.label(
+                                    RichText::new(
+                                        "No devices yet. Open Shelf on your other PC, then pair below.",
+                                    )
+                                    .size(12.0)
+                                    .color(p.text2),
+                                );
+                            }
+                            if !paired.is_empty() {
+                                card(ui, |ui| {
+                                    for (i, dev) in paired.iter().enumerate() {
+                                        if i > 0 {
+                                            hairline(ui);
+                                        }
+                                        let online = dev.addr.is_some();
+                                        ui.horizontal(|ui| {
+                                            let (r, _) = ui.allocate_exact_size(
+                                                vec2(34.0, 34.0),
+                                                egui::Sense::hover(),
+                                            );
+                                            draw_device_icon(ui.painter(), r, online);
+                                            ui.vertical(|ui| {
+                                                ui.spacing_mut().item_spacing.y = 1.0;
+                                                ui.label(
+                                                    RichText::new(shorten(&dev.name, 20))
+                                                        .size(13.5)
+                                                        .color(p.text),
+                                                );
+                                                ui.label(
+                                                    RichText::new(if online {
+                                                        "Online"
+                                                    } else {
+                                                        "Offline"
+                                                    })
+                                                    .size(11.5)
+                                                    .color(if online { p.good } else { p.text3 }),
+                                                );
+                                            });
+                                            ui.with_layout(
+                                                Layout::right_to_left(Align::Center),
+                                                |ui| {
+                                                    if capsule(
+                                                        ui,
+                                                        "Remove",
+                                                        Look::Tint(p.red),
+                                                        26.0,
+                                                        None,
+                                                        true,
+                                                    )
+                                                    .clicked()
+                                                    {
+                                                        actions.push(Action::Unpair(
+                                                            dev.public_key.clone(),
+                                                        ));
+                                                    }
+                                                },
+                                            );
+                                        });
                                     }
                                 });
-                            });
-                        } else if self.pair_dialog.is_none() {
-                            if ui
-                                .add_sized(
-                                    [ui.available_width(), 28.0],
-                                    egui::Button::new("Show a pairing code on this PC"),
+                            }
+                            if !nearby.is_empty() {
+                                section_label(ui, "Nearby");
+                                card(ui, |ui| {
+                                    for (i, d) in nearby.iter().enumerate() {
+                                        if i > 0 {
+                                            hairline(ui);
+                                        }
+                                        ui.horizontal(|ui| {
+                                            let (r, _) = ui.allocate_exact_size(
+                                                vec2(34.0, 34.0),
+                                                egui::Sense::hover(),
+                                            );
+                                            draw_device_icon(ui.painter(), r, false);
+                                            ui.vertical(|ui| {
+                                                ui.spacing_mut().item_spacing.y = 1.0;
+                                                ui.label(
+                                                    RichText::new(shorten(&d.name, 20))
+                                                        .size(13.5)
+                                                        .color(p.text),
+                                                );
+                                                ui.label(
+                                                    RichText::new("Not paired")
+                                                        .size(11.5)
+                                                        .color(p.text3),
+                                                );
+                                            });
+                                            ui.with_layout(
+                                                Layout::right_to_left(Align::Center),
+                                                |ui| {
+                                                    if capsule(
+                                                        ui,
+                                                        "Pair",
+                                                        Look::Primary,
+                                                        26.0,
+                                                        None,
+                                                        true,
+                                                    )
+                                                    .clicked()
+                                                    {
+                                                        actions.push(Action::OpenPair(d.clone()));
+                                                    }
+                                                },
+                                            );
+                                        });
+                                    }
+                                });
+                            }
+
+                            if let Some((code, until)) = &self.my_code {
+                                let left =
+                                    until.saturating_duration_since(Instant::now()).as_secs();
+                                card(ui, |ui| {
+                                    ui.vertical_centered(|ui| {
+                                        ui.label(
+                                            RichText::new("Enter this code on the other PC")
+                                                .size(12.5)
+                                                .color(p.text2),
+                                        );
+                                        ui.add_space(2.0);
+                                        code_tiles(ui, code);
+                                        ui.add_space(2.0);
+                                        thin_progress(ui, left as f32 / 120.0);
+                                        ui.label(
+                                            RichText::new(format!("Expires in {left}s"))
+                                                .size(11.5)
+                                                .color(p.text3),
+                                        );
+                                        if capsule(ui, "Cancel", Look::Glass, 28.0, None, true)
+                                            .clicked()
+                                        {
+                                            actions.push(Action::CancelPairing);
+                                        }
+                                    });
+                                });
+                            } else if self.pair_dialog.is_none()
+                                && capsule(
+                                    ui,
+                                    "Show a pairing code on this PC",
+                                    Look::Glass,
+                                    34.0,
+                                    Some(ui.available_width()),
+                                    true,
                                 )
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
                                 .clicked()
                             {
                                 actions.push(Action::StartPairing);
                             }
-                        }
 
-                        if let Some(d) = self.pair_dialog.as_mut() {
-                            card(ui, |ui| {
-                                ui.label(
-                                    RichText::new(format!("Pair with {}", shorten(&d.device.name, 24)))
-                                        .color(TEXT),
-                                );
-                                ui.label(
-                                    RichText::new("Type the 6 digit code shown on that PC.")
-                                        .size(12.0)
-                                        .color(TEXT2),
-                                );
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut d.code)
-                                        .font(egui::FontId::monospace(20.0))
-                                        .horizontal_align(Align::Center)
-                                        .desired_width(ui.available_width())
-                                        .char_limit(6)
-                                        .hint_text("000000"),
-                                );
-                                if let Some(e) = &d.error {
-                                    ui.label(RichText::new(e.clone()).size(12.0).color(RED));
-                                }
-                                ui.horizontal(|ui| {
-                                    let valid =
-                                        d.code.len() == 6 && d.code.chars().all(|c| c.is_ascii_digit());
-                                    if ui
-                                        .add_enabled(valid && !d.busy, primary_button("Connect"))
+                            if let Some(d) = self.pair_dialog.as_mut() {
+                                card(ui, |ui| {
+                                    ui.label(
+                                        semibold(
+                                            format!("Pair with {}", shorten(&d.device.name, 22)),
+                                            14.0,
+                                        )
+                                        .color(p.text),
+                                    );
+                                    ui.label(
+                                        RichText::new("Type the 6 digit code shown on that PC.")
+                                            .size(12.0)
+                                            .color(p.text2),
+                                    );
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut d.code)
+                                            .font(sb_font(24.0))
+                                            .horizontal_align(Align::Center)
+                                            .desired_width(ui.available_width())
+                                            .margin(vec2(8.0, 10.0))
+                                            .char_limit(6)
+                                            .hint_text("000000"),
+                                    );
+                                    if let Some(e) = &d.error {
+                                        ui.label(RichText::new(e.clone()).size(12.0).color(p.red));
+                                    }
+                                    ui.horizontal(|ui| {
+                                        let valid = d.code.len() == 6
+                                            && d.code.chars().all(|c| c.is_ascii_digit());
+                                        if capsule(
+                                            ui,
+                                            "Connect",
+                                            Look::Primary,
+                                            30.0,
+                                            None,
+                                            valid && !d.busy,
+                                        )
                                         .clicked()
-                                    {
-                                        actions.push(Action::ConnectPair);
+                                        {
+                                            actions.push(Action::ConnectPair);
+                                        }
+                                        if capsule(ui, "Cancel", Look::Glass, 30.0, None, true)
+                                            .clicked()
+                                        {
+                                            actions.push(Action::ClosePair);
+                                        }
+                                        if d.busy {
+                                            ui.spinner();
+                                        }
+                                    });
+                                });
+                            }
+                        });
+
+                    // The shelf itself.
+                    section_label(ui, "On the shelf");
+                    if self.items.is_empty() {
+                        card(ui, |ui| {
+                            ui.vertical_centered(|ui| {
+                                ui.add_space(6.0);
+                                let (r, _) =
+                                    ui.allocate_exact_size(vec2(44.0, 44.0), egui::Sense::hover());
+                                ui.painter().circle_filled(r.center(), 22.0, p.fill);
+                                arrow_tray(ui.painter(), r.center(), p.text3);
+                                ui.label(semibold("Nothing on the shelf", 13.5).color(p.text));
+                                ui.label(
+                                    RichText::new("Items you receive show up here for an hour.")
+                                        .size(12.0)
+                                        .color(p.text2),
+                                );
+                                ui.add_space(6.0);
+                            });
+                        });
+                    }
+                    for (i, it) in self.items.iter().enumerate() {
+                        card(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                let (icon_rect, _) =
+                                    ui.allocate_exact_size(vec2(42.0, 42.0), egui::Sense::hover());
+                                draw_kind_icon(ui.painter(), icon_rect, &it.item.kind);
+                                ui.vertical(|ui| {
+                                    ui.spacing_mut().item_spacing.y = 2.0;
+                                    ui.label(
+                                        semibold(shorten(&it.item.name, 26), 13.5).color(p.text),
+                                    );
+                                    if let Some(t) = &it.item.text {
+                                        ui.label(
+                                            RichText::new(shorten(&t.replace('\n', " "), 40))
+                                                .size(12.0)
+                                                .color(p.text2),
+                                        );
                                     }
-                                    if ui.button("Cancel").clicked() {
-                                        actions.push(Action::ClosePair);
-                                    }
-                                    if d.busy {
-                                        ui.spinner();
-                                    }
+                                    let mins = ITEM_TTL
+                                        .saturating_sub(it.received.elapsed())
+                                        .as_secs()
+                                        / 60;
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "{} \u{00B7} {} \u{00B7} {} min left",
+                                            shorten(&it.item.from, 14),
+                                            human_size(it.item.size),
+                                            mins
+                                        ))
+                                        .size(11.5)
+                                        .color(p.text3),
+                                    );
                                 });
                             });
-                        }
-                    });
-
-                // The shelf itself.
-                section_label(ui, "On the shelf");
-                if self.items.is_empty() {
-                    card(ui, |ui| {
-                        ui.vertical_centered(|ui| {
-                            ui.add_space(8.0);
-                            ui.label(RichText::new("Nothing on the shelf").color(TEXT));
-                            ui.label(
-                                RichText::new("Items you receive show up here for an hour.")
-                                    .size(12.0)
-                                    .color(TEXT2),
-                            );
-                            ui.add_space(8.0);
-                        });
-                    });
-                }
-                for (i, it) in self.items.iter().enumerate() {
-                    card(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            let (icon_rect, _) =
-                                ui.allocate_exact_size(vec2(36.0, 36.0), egui::Sense::hover());
-                            draw_kind_icon(ui.painter(), icon_rect, &it.item.kind);
-                            ui.vertical(|ui| {
-                                ui.spacing_mut().item_spacing.y = 2.0;
-                                ui.label(
-                                    RichText::new(shorten(&it.item.name, 28))
-                                        .size(13.5)
-                                        .strong()
-                                        .color(TEXT),
-                                );
-                                if let Some(t) = &it.item.text {
-                                    ui.label(
-                                        RichText::new(shorten(&t.replace('\n', " "), 44))
-                                            .size(12.0)
-                                            .color(TEXT2),
-                                    );
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                                if capsule(ui, "Copy", Look::Tint(p.accent), 26.0, None, true)
+                                    .clicked()
+                                {
+                                    actions.push(Action::Copy(i));
                                 }
-                                let mins =
-                                    ITEM_TTL.saturating_sub(it.received.elapsed()).as_secs() / 60;
-                                ui.label(
-                                    RichText::new(format!(
-                                        "{} \u{00B7} {} \u{00B7} {} min left",
-                                        shorten(&it.item.from, 14),
-                                        human_size(it.item.size),
-                                        mins
-                                    ))
-                                    .size(11.5)
-                                    .color(TEXT3),
-                                );
+                                if it.item.path.is_some()
+                                    && capsule(ui, "Show", Look::Glass, 26.0, None, true).clicked()
+                                {
+                                    actions.push(Action::Reveal(i));
+                                }
+                                if capsule(ui, "Remove", Look::Tint(p.red), 26.0, None, true)
+                                    .clicked()
+                                {
+                                    actions.push(Action::Remove(i));
+                                }
                             });
                         });
-                        ui.horizontal(|ui| {
-                            ui.add_space(36.0);
-                            if link_button(ui, "Copy", ACCENT).clicked() {
-                                actions.push(Action::Copy(i));
-                            }
-                            if it.item.path.is_some()
-                                && link_button(ui, "Show", ACCENT).clicked()
-                            {
-                                actions.push(Action::Reveal(i));
-                            }
-                            if link_button(ui, "Remove", RED).clicked() {
-                                actions.push(Action::Remove(i));
-                            }
-                        });
-                    });
-                }
+                    }
+                    ui.add_space(4.0);
+                });
             });
         });
 
