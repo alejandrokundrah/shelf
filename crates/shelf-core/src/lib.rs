@@ -11,5 +11,5 @@ pub use engine::{
     start, Command, Event, Handle, NearbyDevice, Payload, PeerStatus, ReceivedItem, Target,
     TransferDirection,
 };
-pub use protocol::ItemKind;
+pub use protocol::{ItemKind, RoomMessage};
 pub use store::inbox_dir;
