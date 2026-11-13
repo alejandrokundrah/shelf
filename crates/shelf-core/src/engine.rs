@@ -8,7 +8,8 @@ use crate::store::{inbox_dir, Config, PairedPeer};
 use anyhow::{anyhow, bail, Result};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use rand::Rng;
-use std::collections::HashMap;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -45,6 +46,8 @@ pub enum Command {
     PairWith { addr: SocketAddr, code: String },
     Unpair { public_key: String },
     Send { target: Target, payload: Payload },
+    SetReceivingPaused(bool),
+    CancelTransfers,
     Shutdown,
 }
 
@@ -131,6 +134,9 @@ struct Shared {
     offer: Mutex<Option<PairOffer>>,
     nearby: Mutex<HashMap<String, NearbyDevice>>,
     next_id: AtomicU64,
+    receiving_paused: std::sync::atomic::AtomicBool,
+    cancel_transfers: std::sync::atomic::AtomicBool,
+    received_hashes: Mutex<HashSet<[u8; 32]>>,
 }
 
 impl Shared {
@@ -241,6 +247,9 @@ pub fn start(wake: impl Fn() + Send + Sync + 'static) -> Result<(Handle, Receive
         offer: Mutex::new(None),
         nearby: Mutex::new(HashMap::new()),
         next_id: AtomicU64::new(1),
+        receiving_paused: std::sync::atomic::AtomicBool::new(false),
+        cancel_transfers: std::sync::atomic::AtomicBool::new(false),
+        received_hashes: Mutex::new(HashSet::new()),
     });
     std::thread::Builder::new()
         .name("shelf-engine".into())
@@ -409,6 +418,7 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
             }
             Command::Unpair { public_key } => shared.remove_peer(&public_key),
             Command::Send { target, payload } => {
+                shared.cancel_transfers.store(false, Ordering::SeqCst);
                 let targets = shared.targets(&target);
                 if targets.is_empty() {
                     shared.emit(Event::Error("No paired device is nearby right now".into()));
@@ -416,6 +426,18 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                 }
                 let s = shared.clone();
                 tokio::spawn(send_payload(s, targets, payload));
+            }
+            Command::SetReceivingPaused(paused) => {
+                shared.receiving_paused.store(paused, Ordering::SeqCst);
+                shared.emit(Event::Info(if paused {
+                    "Receiving paused".into()
+                } else {
+                    "Receiving resumed".into()
+                }));
+            }
+            Command::CancelTransfers => {
+                shared.cancel_transfers.store(true, Ordering::SeqCst);
+                shared.emit(Event::Info("Cancelling transfers...".into()));
             }
         }
     }
@@ -549,12 +571,20 @@ async fn receive_to_file(
     ch: &mut SecureChannel,
     path: &Path,
     size: u64,
+    offset: u64,
 ) -> Result<()> {
-    let mut f = tokio::fs::File::create(path).await?;
-    let mut left = size;
-    let mut done = 0;
-    let mut last_percent = 0;
+    let mut f = if offset == 0 {
+        tokio::fs::File::create(path).await?
+    } else {
+        tokio::fs::OpenOptions::new().append(true).open(path).await?
+    };
+    let mut left = size.saturating_sub(offset);
+    let mut done = offset;
+    let mut last_percent = if size == 0 { 0 } else { ((offset * 100) / size) as u8 };
     while left > 0 {
+        if shared.cancel_transfers.load(Ordering::SeqCst) {
+            bail!("transfer cancelled");
+        }
         let chunk = ch.recv().await?;
         if chunk.is_empty() || chunk.len() as u64 > left {
             bail!("corrupt transfer");
@@ -586,6 +616,9 @@ async fn receive_to_file(
 }
 
 async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> {
+    if shared.receiving_paused.load(Ordering::SeqCst) {
+        bail!("receiving is paused");
+    }
     let key = shared.private_key()?;
     let mut ch = timeout(Duration::from_secs(10), SecureChannel::accept(stream, &key)).await??;
 
@@ -604,12 +637,22 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
         bail!("item from {} is too large", peer.name);
     }
 
+    let duplicate = shared.received_hashes.lock().unwrap().contains(&header.hash);
+    if duplicate {
+        ch.send(b"DUPLICATE").await?;
+        return Ok(());
+    }
+
     let (path, text) = if header.kind == ItemKind::Text {
+        ch.send(b"START").await?;
         let mut buf = Vec::with_capacity(header.size as usize);
         let mut left = header.size;
         let mut done = 0;
         let mut last_percent = 0;
         while left > 0 {
+            if shared.cancel_transfers.load(Ordering::SeqCst) {
+                bail!("transfer cancelled");
+            }
             let chunk = ch.recv().await?;
             if chunk.is_empty() || chunk.len() as u64 > left {
                 bail!("corrupt transfer");
@@ -641,16 +684,32 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
     } else {
         let inbox = inbox_dir();
         tokio::fs::create_dir_all(&inbox).await?;
-        let path = unique_inbox_path(&inbox, &header.name);
-        if let Err(e) =
-            receive_to_file(shared, &peer.name, &header.name, &mut ch, &path, header.size).await
-        {
-            let _ = tokio::fs::remove_file(&path).await;
-            return Err(e);
+        let partial = inbox.join(format!(".shelf-{}.part", hex::encode(header.hash)));
+        let offset = tokio::fs::metadata(&partial)
+            .await
+            .map(|m| m.len().min(header.size))
+            .unwrap_or(0);
+        if offset == header.size && header.size > 0 {
+            let _ = tokio::fs::remove_file(&partial).await;
         }
+        let offset = if offset == header.size { 0 } else { offset };
+        ch.send(format!("RESUME:{offset}").as_bytes()).await?;
+        receive_to_file(
+            shared,
+            &peer.name,
+            &header.name,
+            &mut ch,
+            &partial,
+            header.size,
+            offset,
+        )
+        .await?;
+        let path = unique_inbox_path(&inbox, &header.name);
+        tokio::fs::rename(&partial, &path).await?;
         (Some(path), None)
     };
 
+    shared.received_hashes.lock().unwrap().insert(header.hash);
     ch.send(b"OK").await?;
     shared.emit(Event::Received(ReceivedItem {
         id: rand::random::<u64>(),
@@ -683,10 +742,42 @@ async fn push_item<R: AsyncRead + Unpin>(
 
     ch.send(&serde_json::to_vec(&header)?).await?;
 
+    let response = ch.recv().await?;
+    if response == b"DUPLICATE" {
+        return Ok(());
+    }
+    let offset = if response == b"START" {
+        0
+    } else if let Some(value) = response.strip_prefix(b"RESUME:") {
+        std::str::from_utf8(value)?.parse::<u64>()?.min(header.size)
+    } else {
+        bail!("receiver rejected transfer");
+    };
+    let mut skipped = 0;
+    let mut skip_buf = vec![0u8; CHUNK];
+    while skipped < offset {
+        let want = std::cmp::min(offset - skipped, CHUNK as u64) as usize;
+        let n = reader.read(&mut skip_buf[..want]).await?;
+        if n == 0 {
+            bail!("the source ended before the resume offset");
+        }
+        skipped += n as u64;
+    }
+
     let mut buf = vec![0u8; CHUNK];
-    let mut left = header.size;
-    let mut last_percent = 0u8;
+    let mut left = header.size - offset;
+    let mut last_percent = if header.size == 0 {
+        0
+    } else {
+        ((offset * 100) / header.size) as u8
+    };
     while left > 0 {
+        if shared.cancel_transfers.load(Ordering::SeqCst) {
+            bail!("transfer cancelled");
+        }
+        if shared.cancel_transfers.load(Ordering::SeqCst) {
+            bail!("transfer cancelled");
+        }
         let want = std::cmp::min(left, CHUNK as u64) as usize;
         let n = reader.read(&mut buf[..want]).await?;
         if n == 0 {
@@ -707,6 +798,9 @@ async fn push_item<R: AsyncRead + Unpin>(
     }
 
     let ack = ch.recv().await?;
+    if ack == b"DUPLICATE" {
+        return Ok(());
+    }
     if ack != b"OK" {
         bail!("{} did not confirm receipt", dest.name);
     }
@@ -721,13 +815,41 @@ async fn send_file(shared: &Arc<Shared>, dest: &Dest, path: &Path, label: &str) 
     if meta.len() > MAX_FILE_BYTES {
         bail!("file is too large");
     }
-    let file = tokio::fs::File::open(path).await?;
+    let mut hash_reader = tokio::fs::File::open(path).await?;
+    let mut hasher = Sha256::new();
+    let mut hash_buf = vec![0u8; CHUNK];
+    loop {
+        let n = hash_reader.read(&mut hash_buf).await?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&hash_buf[..n]);
+    }
+    let hash: [u8; 32] = hasher.finalize().into();
     let header = ItemHeader {
         kind: ItemKind::File,
         name: label.to_string(),
         size: meta.len(),
+        hash,
     };
-    push_item(shared, dest, header, file, label).await
+    let mut last_error = None;
+    for attempt in 0..3 {
+        let file = tokio::fs::File::open(path).await?;
+        match push_item(shared, dest, header.clone(), file, label).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                let message = e.to_string();
+                if message.contains("cancelled") || message.contains("paused") {
+                    return Err(e);
+                }
+                last_error = Some(e);
+                if attempt < 2 {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow!("transfer failed")))
 }
 
 async fn send_payload(shared: Arc<Shared>, targets: Vec<Dest>, payload: Payload) {
@@ -752,6 +874,7 @@ async fn send_payload(shared: Arc<Shared>, targets: Vec<Dest>, payload: Payload)
                         kind: ItemKind::Text,
                         name: "Text".to_string(),
                         size: bytes.len() as u64,
+                        hash: Sha256::digest(bytes).into(),
                     };
                     push_item(&shared, &dest, header, bytes, "Text").await
                 };
@@ -767,6 +890,7 @@ async fn send_payload(shared: Arc<Shared>, targets: Vec<Dest>, payload: Payload)
                     kind: ItemKind::Image,
                     name: label.clone(),
                     size: png.len() as u64,
+                    hash: Sha256::digest(png).into(),
                 };
                 let res = push_item(&shared, &dest, header, &png[..], &label).await;
                 shared.finish_send(&dest.name, label, res);

@@ -12,9 +12,10 @@ pub enum ItemKind {
     Image,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ItemHeader {
     pub kind: ItemKind,
     pub name: String,
     pub size: u64,
+    pub hash: [u8; 32],
 }

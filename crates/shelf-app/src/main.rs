@@ -613,6 +613,7 @@ enum Action {
     Reveal(usize),
     Remove(usize),
     ClearAll,
+    CancelTransfers,
 }
 
 struct ShelfApp {
@@ -633,6 +634,7 @@ struct ShelfApp {
     pair_dialog: Option<PairDialog>,
 
     auto_copy: bool,
+    receiving_paused: bool,
     pinned: bool,
 
     styled_dark: Option<bool>,
@@ -670,6 +672,7 @@ impl ShelfApp {
             my_code: None,
             pair_dialog: None,
             auto_copy: true,
+            receiving_paused: false,
             pinned: false,
             styled_dark: None,
             cur_w: COLLAPSED_W,
@@ -1114,6 +1117,12 @@ impl eframe::App for ShelfApp {
                                 );
                             }
                             thin_progress(ui, fraction);
+                            if !transfer.finished
+                                && capsule(ui, "Cancel", Look::Tint(p.red), 24.0, None, true)
+                                    .clicked()
+                            {
+                                actions.push(Action::CancelTransfers);
+                            }
                         });
                     }
 
@@ -1179,6 +1188,17 @@ impl eframe::App for ShelfApp {
                             "Ready to paste with Ctrl+V",
                             &mut self.auto_copy,
                         );
+                        let was_paused = self.receiving_paused;
+                        row_toggle(
+                            ui,
+                            "Pause receiving",
+                            "Outgoing transfers will continue",
+                            &mut self.receiving_paused,
+                        );
+                        if self.receiving_paused != was_paused {
+                            self.handle
+                                .send(Command::SetReceivingPaused(self.receiving_paused));
+                        }
                     });
 
                     // Devices and pairing.
@@ -1535,6 +1555,7 @@ impl eframe::App for ShelfApp {
                     remove.extend(0..self.items.len());
                     self.status = "Shelf cleared".to_string();
                 }
+                Action::CancelTransfers => self.handle.send(Command::CancelTransfers),
             }
         }
         remove.sort_unstable();
