@@ -30,7 +30,8 @@ const PROGRESS_EVERY: Duration = Duration::from_millis(120);
 #[derive(Clone, Debug, PartialEq)]
 pub enum Target {
     All,
-    Peer(String), // public key (hex)
+    /// One or more specific devices, by public key (hex).
+    Peers(Vec<String>),
 }
 
 #[derive(Clone, Debug)]
@@ -214,7 +215,7 @@ impl Shared {
             .iter()
             .filter(|p| match t {
                 Target::All => true,
-                Target::Peer(k) => &p.public_key == k,
+                Target::Peers(keys) => keys.contains(&p.public_key),
             })
             .filter_map(|p| {
                 nearby
@@ -452,6 +453,22 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
             Command::Unpair { public_key } => shared.remove_peer(&public_key),
             Command::Send { target, payload } => {
                 let targets = shared.targets(&target);
+                // Chosen devices that are paired but not reachable are reported per item
+                // instead of being skipped silently.
+                if let Target::Peers(keys) = &target {
+                    let offline: Vec<String> = {
+                        let cfg = shared.config.lock().unwrap();
+                        cfg.peers
+                            .iter()
+                            .filter(|p| keys.contains(&p.public_key))
+                            .filter(|p| !targets.iter().any(|d| d.pk == p.public_key))
+                            .map(|p| p.name.clone())
+                            .collect()
+                    };
+                    for name in &offline {
+                        report_skipped(&shared, &payload, name);
+                    }
+                }
                 if targets.is_empty() {
                     shared.emit(Event::Error("No paired device is nearby right now".into()));
                     continue;
@@ -738,6 +755,29 @@ async fn send_file(
         size: meta.len(),
     };
     push_item(shared, dest, header, file, label, id).await
+}
+
+/// Shows each item as failed for a chosen device that is not reachable right now.
+fn report_skipped(shared: &Arc<Shared>, payload: &Payload, peer: &str) {
+    let items: Vec<(String, u64)> = match payload {
+        Payload::Files(paths) => paths
+            .iter()
+            .map(|p| {
+                let label = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "file".to_string());
+                (label, std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
+            })
+            .collect(),
+        Payload::Text(t) => vec![("Text".to_string(), t.len() as u64)],
+        Payload::Image(png) => vec![("Image".to_string(), png.len() as u64)],
+    };
+    for (label, total) in items {
+        let id = shared.new_id();
+        let state = TransferState::Failed("device is offline or not on this network".to_string());
+        shared.transfer(id, TransferDir::Upload, &label, peer, 0, total, state);
+    }
 }
 
 async fn send_payload(shared: Arc<Shared>, targets: Vec<Dest>, payload: Payload) {

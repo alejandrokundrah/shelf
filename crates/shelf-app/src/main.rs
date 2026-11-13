@@ -821,7 +821,8 @@ struct ShelfApp {
     paired: Vec<PeerStatus>,
     nearby: Vec<NearbyDevice>,
     items: Vec<ShelfItem>,
-    target: Target,
+    /// Public keys of the devices chosen as recipients; empty means all paired devices.
+    selected: Vec<String>,
     status: String,
     transfers: Vec<TransferRow>,
     clear_armed_until: Option<Instant>,
@@ -860,7 +861,7 @@ impl ShelfApp {
             paired: Vec::new(),
             nearby: Vec::new(),
             items: Vec::new(),
-            target: Target::All,
+            selected: Vec::new(),
             status: String::new(),
             transfers: Vec::new(),
             clear_armed_until: None,
@@ -874,6 +875,14 @@ impl ShelfApp {
             positioned: false,
             last_active: now - Duration::from_secs(10),
             open_until: now,
+        }
+    }
+
+    fn current_target(&self) -> Target {
+        if self.selected.is_empty() {
+            Target::All
+        } else {
+            Target::Peers(self.selected.clone())
         }
     }
 
@@ -892,11 +901,9 @@ impl ShelfApp {
                 Event::Peers { paired, nearby } => {
                     self.paired = paired;
                     self.nearby = nearby;
-                    if let Target::Peer(k) = &self.target {
-                        if !self.paired.iter().any(|p| &p.public_key == k) {
-                            self.target = Target::All;
-                        }
-                    }
+                    // Forget selected devices that are no longer paired.
+                    let paired = &self.paired;
+                    self.selected.retain(|k| paired.iter().any(|p| &p.public_key == k));
                 }
                 Event::PairingCode { code, seconds } => {
                     self.my_code = Some((code, Instant::now() + Duration::from_secs(seconds)));
@@ -935,7 +942,7 @@ impl ShelfApp {
             match res {
                 Ok(payload) => {
                     self.set_status("Sending clipboard...");
-                    self.handle.send(Command::Send { target: self.target.clone(), payload });
+                    self.handle.send(Command::Send { target: self.current_target(), payload });
                 }
                 Err(e) => self.set_status(e),
             }
@@ -1086,7 +1093,7 @@ impl eframe::App for ShelfApp {
         if !dropped.is_empty() {
             self.set_status(format!("Sending {} file(s)...", dropped.len()));
             self.handle.send(Command::Send {
-                target: self.target.clone(),
+                target: self.current_target(),
                 payload: Payload::Files(dropped),
             });
             self.open_for(3);
@@ -1254,22 +1261,33 @@ impl eframe::App for ShelfApp {
                         ui.label(RichText::new("Send to").size(13.5).color(p.text));
                         ui.horizontal_wrapped(|ui| {
                             ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-                            let all = matches!(self.target, Target::All);
-                            let look = if all { Look::Primary } else { Look::Glass };
+                            let look = if self.selected.is_empty() { Look::Primary } else { Look::Glass };
                             if capsule(ui, "All devices", look, 28.0, None, true).clicked() {
-                                self.target = Target::All;
+                                self.selected.clear();
                             }
+                            // Tap devices to pick any combination; tap again to drop one.
                             for dev in &paired {
-                                let selected =
-                                    matches!(&self.target, Target::Peer(k) if k == &dev.public_key);
-                                let look = if selected { Look::Primary } else { Look::Glass };
+                                let on = self.selected.contains(&dev.public_key);
+                                let look = if on { Look::Primary } else { Look::Glass };
                                 if capsule(ui, &shorten(&dev.name, 18), look, 28.0, None, true)
                                     .clicked()
                                 {
-                                    self.target = Target::Peer(dev.public_key.clone());
+                                    if on {
+                                        self.selected.retain(|k| k != &dev.public_key);
+                                    } else {
+                                        self.selected.push(dev.public_key.clone());
+                                    }
                                 }
                             }
                         });
+                        if paired.len() > 1 {
+                            let hint = match self.selected.len() {
+                                0 => format!("Sending to all {} devices", paired.len()),
+                                1 => "Sending to 1 device".to_string(),
+                                n => format!("Sending to {n} devices"),
+                            };
+                            ui.label(RichText::new(hint).size(11.5).color(p.text2));
+                        }
                         hairline(ui);
                         row_toggle(
                             ui,
