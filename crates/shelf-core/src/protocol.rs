@@ -30,6 +30,13 @@ pub struct RoomFileRecord {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RoomMemberRecord {
+    pub name: String,
+    pub public_key: String,
+    pub owner: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum RoomMessage {
     Join {
         room_id: String,
@@ -39,6 +46,14 @@ pub enum RoomMessage {
     },
     Manifest {
         room_id: String,
+        #[serde(default)]
+        room_name: String,
+        #[serde(default)]
+        invite_code: String,
+        #[serde(default)]
+        owner_public_key: String,
+        #[serde(default)]
+        members: Vec<RoomMemberRecord>,
         files: Vec<RoomFileRecord>,
     },
     Upload {
@@ -68,6 +83,10 @@ mod tests {
     fn room_messages_round_trip() {
         let message = RoomMessage::Manifest {
             room_id: "room-1".into(),
+            room_name: "Science Class".into(),
+            invite_code: "123456".into(),
+            owner_public_key: "teacher".into(),
+            members: Vec::new(),
             files: vec![RoomFileRecord {
                 hash: "abc".into(),
                 name: "notes.txt".into(),

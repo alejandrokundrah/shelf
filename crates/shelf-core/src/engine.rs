@@ -3,7 +3,10 @@
 
 use crate::channel::SecureChannel;
 use crate::pairing;
-use crate::protocol::{ItemHeader, ItemKind, CHUNK, MAX_FILE_BYTES, MAX_TEXT_BYTES};
+use crate::protocol::{
+    ItemHeader, ItemKind, RoomFileRecord, RoomMemberRecord, RoomMessage, CHUNK, MAX_FILE_BYTES,
+    MAX_TEXT_BYTES,
+};
 use crate::store::{inbox_dir, Config, PairedPeer, Room};
 use anyhow::{anyhow, bail, Result};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
@@ -42,6 +45,11 @@ pub enum Payload {
 
 pub enum Command {
     CreateRoom { name: String },
+    JoinRoom {
+        addr: SocketAddr,
+        room_id: String,
+        invite_code: String,
+    },
     StartPairing,
     CancelPairing,
     PairWith { addr: SocketAddr, code: String },
@@ -388,6 +396,18 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
         match cmd {
             Command::Shutdown => break,
             Command::CreateRoom { name } => shared.create_room(name),
+            Command::JoinRoom {
+                addr,
+                room_id,
+                invite_code,
+            } => {
+                let s = shared.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = join_room(&s, addr, &room_id, &invite_code).await {
+                        s.emit(Event::Error(format!("room join failed: {e}")));
+                    }
+                });
+            }
             Command::StartPairing => {
                 let code = format!("{:06}", rand::thread_rng().gen_range(0..1_000_000u32));
                 let id = shared.next_id.fetch_add(1, Ordering::SeqCst);
@@ -505,12 +525,158 @@ async fn handle_conn(shared: Arc<Shared>, mut stream: TcpStream) {
     };
     let result = match tag {
         b'P' => handle_pairing(&shared, stream).await,
+        b'R' => handle_room_connection(&shared, stream).await,
         b'T' => handle_transfer(&shared, stream).await,
         _ => Ok(()),
     };
     if let Err(e) = result {
         shared.emit(Event::Error(e.to_string()));
     }
+}
+
+async fn handle_room_connection(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> {
+    let key = shared.private_key()?;
+    let mut ch = timeout(Duration::from_secs(10), SecureChannel::accept(stream, &key)).await??;
+    let peer = {
+        let config = shared.config.lock().unwrap();
+        config.find_peer(&ch.remote_static).cloned()
+    }
+    .ok_or_else(|| anyhow!("room connection rejected from an unpaired device"))?;
+    let message: RoomMessage = serde_json::from_slice(&ch.recv().await?)?;
+    let RoomMessage::Join {
+        room_id,
+        invite_code,
+        member_name,
+        member_public_key,
+    } = message
+    else {
+        bail!("expected room join message");
+    };
+
+    let manifest = {
+        let mut config = shared.config.lock().unwrap();
+        let local_key = config.public_key.clone();
+        let room = {
+            let room = config
+                .rooms
+                .iter_mut()
+                .find(|room| room.id == room_id)
+                .ok_or_else(|| anyhow!("room not found"))?;
+            if room.invite_code != invite_code || !room.has_member(&local_key) {
+                bail!("invalid room invite");
+            }
+            room.add_member(crate::store::RoomMember {
+                name: member_name,
+                public_key: member_public_key,
+                role: crate::store::RoomRole::Member,
+            });
+            room.clone()
+        };
+        config.save()?;
+        RoomMessage::Manifest {
+            room_id: room.id.clone(),
+            room_name: room.name.clone(),
+            invite_code: room.invite_code.clone(),
+            owner_public_key: room.owner_public_key.clone(),
+            members: room
+                .members
+                .iter()
+                .map(|member| RoomMemberRecord {
+                    name: member.name.clone(),
+                    public_key: member.public_key.clone(),
+                    owner: member.role == crate::store::RoomRole::Owner,
+                })
+                .collect(),
+            files: room
+                .files
+                .iter()
+                .map(|file| RoomFileRecord {
+                    hash: file.hash.clone(),
+                    name: file.name.clone(),
+                    size: file.size,
+                    uploaded_by: file.uploaded_by.clone(),
+                    uploaded_at: file.uploaded_at,
+                })
+                .collect(),
+        }
+    };
+    ch.send(&serde_json::to_vec(&manifest)?).await?;
+    shared.emit(Event::Info(format!("{} joined room {}", peer.name, room_id)));
+    Ok(())
+}
+
+async fn join_room(
+    shared: &Arc<Shared>,
+    addr: SocketAddr,
+    room_id: &str,
+    invite_code: &str,
+) -> Result<()> {
+    let key = shared.private_key()?;
+    let config = shared.config.lock().unwrap().clone();
+    let mut stream = timeout(Duration::from_secs(5), TcpStream::connect(addr)).await??;
+    stream.write_u8(b'R').await?;
+    let mut ch = timeout(Duration::from_secs(10), SecureChannel::initiate(stream, &key)).await??;
+    if config.find_peer(&ch.remote_static).is_none() {
+        bail!("room owner is not paired");
+    }
+    ch.send(
+        &serde_json::to_vec(&RoomMessage::Join {
+            room_id: room_id.to_string(),
+            invite_code: invite_code.to_string(),
+            member_name: config.device_name.clone(),
+            member_public_key: config.public_key.clone(),
+        })?,
+    )
+    .await?;
+    let response: RoomMessage = serde_json::from_slice(&ch.recv().await?)?;
+    let RoomMessage::Manifest {
+        room_id,
+        room_name,
+        invite_code,
+        owner_public_key,
+        members,
+        files,
+    } = response
+    else {
+        bail!("room owner returned an invalid response");
+    };
+    let room = crate::store::Room {
+        id: room_id,
+        name: room_name,
+        invite_code,
+        owner_public_key,
+        members: members
+            .into_iter()
+            .map(|member| crate::store::RoomMember {
+                name: member.name,
+                public_key: member.public_key,
+                role: if member.owner {
+                    crate::store::RoomRole::Owner
+                } else {
+                    crate::store::RoomRole::Member
+                },
+            })
+            .collect(),
+        files: files
+            .into_iter()
+            .map(|file| crate::store::RoomFile {
+                hash: file.hash,
+                name: file.name,
+                size: file.size,
+                uploaded_by: file.uploaded_by,
+                uploaded_at: file.uploaded_at,
+            })
+            .collect(),
+    };
+    let mut config = shared.config.lock().unwrap();
+    if let Some(existing) = config.rooms.iter_mut().find(|existing| existing.id == room.id) {
+        *existing = room.clone();
+    } else {
+        config.rooms.push(room.clone());
+    }
+    config.save()?;
+    shared.emit(Event::RoomUpdated(room));
+    Ok(())
 }
 
 const RESERVED: [&str; 22] = [
