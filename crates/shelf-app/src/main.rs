@@ -8,6 +8,7 @@ use eframe::egui::{
 };
 use shelf_core::{
     Command, Event, Handle, ItemKind, NearbyDevice, Payload, PeerStatus, ReceivedItem, Target,
+    TransferDir, TransferState, TransferUpdate,
 };
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -392,6 +393,8 @@ enum Look {
     Primary,
     Glass,
     Tint(Color32),
+    /// Solid colored fill with white text (used for armed destructive actions).
+    Solid(Color32),
 }
 
 /// Capsule button. `width` of `None` hugs the label.
@@ -418,8 +421,9 @@ fn capsule(
             p.text,
         ),
         Look::Tint(c) => (c.gamma_multiply(if down { 0.34 } else if hot { 0.26 } else { 0.16 }), c),
+        Look::Solid(c) => (c, Color32::WHITE),
     };
-    if let Look::Primary = look {
+    if matches!(look, Look::Primary | Look::Solid(_)) {
         if down {
             fill = fill.lerp_to_gamma(Color32::BLACK, 0.18);
         } else if hot {
@@ -433,12 +437,70 @@ fn capsule(
 }
 
 fn thin_progress(ui: &mut egui::Ui, frac: f32) {
+    thin_progress_colored(ui, frac, pal().accent);
+}
+
+fn thin_progress_colored(ui: &mut egui::Ui, frac: f32, color: Color32) {
     let p = pal();
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 5.0), egui::Sense::hover());
     ui.painter().rect_filled(rect, 2.5, p.fill);
     let mut fill = rect;
-    fill.set_width(rect.width() * frac.clamp(0.0, 1.0));
-    ui.painter().rect_filled(fill, 2.5, p.accent);
+    fill.set_width((rect.width() * frac.clamp(0.0, 1.0)).max(if frac > 0.0 { 5.0 } else { 0.0 }));
+    ui.painter().rect_filled(fill, 2.5, color);
+}
+
+/// Title on the left, anything (usually a button) on the right.
+fn section_header(ui: &mut egui::Ui, title: &str, add_right: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal(|ui| {
+        ui.add_space(2.0);
+        ui.label(semibold(title, 12.5).color(pal().text2));
+        ui.with_layout(Layout::right_to_left(Align::Center), add_right);
+    });
+}
+
+fn human_speed(bytes_per_sec: f64) -> String {
+    format!("{}/s", human_size(bytes_per_sec.max(0.0) as u64))
+}
+
+fn human_eta(secs: u64) -> String {
+    match secs {
+        0..=59 => format!("{} s left", secs.max(1)),
+        60..=3599 => format!("{} min {} s left", secs / 60, secs % 60),
+        _ => format!("{} h {} min left", secs / 3600, (secs % 3600) / 60),
+    }
+}
+
+/// Round status badge for a transfer: arrow while running, check when done, ! on failure.
+fn draw_transfer_icon(painter: &egui::Painter, rect: Rect, dir: TransferDir, state: &TransferState) {
+    let p = pal();
+    let color = match state {
+        TransferState::Failed(_) => p.red,
+        TransferState::Done => p.good,
+        _ => p.accent,
+    };
+    let c = rect.center();
+    painter.circle_filled(c, rect.width() / 2.0, color.gamma_multiply(0.18));
+    let s = Stroke::new(2.0_f32, color);
+    match state {
+        TransferState::Failed(_) => {
+            painter.line_segment([c + vec2(0.0, -6.0), c + vec2(0.0, 1.5)], s);
+            painter.circle_filled(c + vec2(0.0, 6.0), 1.4, color);
+        }
+        TransferState::Done => {
+            painter.add(egui::Shape::line(
+                vec![c + vec2(-5.5, 0.5), c + vec2(-1.5, 4.5), c + vec2(6.0, -4.5)],
+                s,
+            ));
+        }
+        _ => {
+            let up = dir == TransferDir::Upload;
+            let (a, b) = if up { (6.0, -6.0) } else { (-6.0, 6.0) };
+            let tip = if up { -6.0 } else { 6.0 };
+            painter.line_segment([c + vec2(0.0, a), c + vec2(0.0, b)], s);
+            painter.line_segment([c + vec2(-5.0, tip + if up { 5.0 } else { -5.0 }), c + vec2(0.0, tip)], s);
+            painter.line_segment([c + vec2(5.0, tip + if up { 5.0 } else { -5.0 }), c + vec2(0.0, tip)], s);
+        }
+    }
 }
 
 fn rounded_rect_path(rect: Rect, r: f32) -> Vec<Pos2> {
@@ -589,6 +651,149 @@ struct PairDialog {
     error: Option<String>,
 }
 
+/// One sent or received item and the numbers needed to show speed and time left.
+struct TransferRow {
+    u: TransferUpdate,
+    /// Reference sample for the speed estimate.
+    last_t: Instant,
+    last_bytes: u64,
+    /// Last time the engine reported anything for this item.
+    last_update: Instant,
+    /// Smoothed bytes per second.
+    speed: f64,
+    finished_at: Option<Instant>,
+}
+
+impl TransferRow {
+    fn new(u: TransferUpdate) -> Self {
+        let now = Instant::now();
+        let mut row = Self {
+            last_t: now,
+            last_bytes: u.bytes,
+            last_update: now,
+            speed: 0.0,
+            finished_at: None,
+            u: u.clone(),
+        };
+        if matches!(u.state, TransferState::Done | TransferState::Failed(_)) {
+            row.finished_at = Some(now);
+        }
+        row
+    }
+
+    fn apply(&mut self, u: TransferUpdate) {
+        let now = Instant::now();
+        match &u.state {
+            TransferState::Active => {
+                if self.u.state == TransferState::Queued {
+                    self.last_t = now;
+                    self.last_bytes = u.bytes;
+                } else {
+                    let dt = now.duration_since(self.last_t).as_secs_f64();
+                    if dt > 0.05 && u.bytes >= self.last_bytes {
+                        let inst = (u.bytes - self.last_bytes) as f64 / dt;
+                        self.speed = if self.speed <= 0.0 { inst } else { 0.7 * self.speed + 0.3 * inst };
+                        self.last_t = now;
+                        self.last_bytes = u.bytes;
+                    }
+                }
+                self.last_update = now;
+            }
+            TransferState::Done | TransferState::Failed(_) => self.finished_at = Some(now),
+            TransferState::Queued => {}
+        }
+        self.u = u;
+    }
+
+    fn is_live(&self) -> bool {
+        matches!(self.u.state, TransferState::Queued | TransferState::Active)
+    }
+
+    fn frac(&self) -> f32 {
+        if self.u.total == 0 {
+            0.0
+        } else {
+            (self.u.bytes as f64 / self.u.total as f64).clamp(0.0, 1.0) as f32
+        }
+    }
+}
+
+fn transfer_card(ui: &mut egui::Ui, t: &TransferRow, actions: &mut Vec<Action>) {
+    let p = pal();
+    let u = &t.u;
+    let up = u.dir == TransferDir::Upload;
+    let peer = shorten(&u.peer, 16);
+    card(ui, |ui| {
+        ui.horizontal(|ui| {
+            let (r, _) = ui.allocate_exact_size(vec2(34.0, 34.0), egui::Sense::hover());
+            draw_transfer_icon(ui.painter(), r, u.dir, &u.state);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 1.0;
+                ui.label(semibold(shorten(&u.name, 26), 13.5).color(p.text));
+                let (sub, col) = match &u.state {
+                    TransferState::Queued => (
+                        format!("{} {peer}", if up { "Waiting to send to" } else { "Waiting for" }),
+                        p.text2,
+                    ),
+                    TransferState::Active => (
+                        format!("{} {peer}", if up { "Sending to" } else { "Receiving from" }),
+                        p.text2,
+                    ),
+                    TransferState::Done => (
+                        format!("{} {peer}", if up { "Sent to" } else { "Received from" }),
+                        p.good,
+                    ),
+                    TransferState::Failed(_) => (
+                        format!("{} {peer}", if up { "Could not send to" } else { "Could not receive from" }),
+                        p.red,
+                    ),
+                };
+                ui.label(RichText::new(sub).size(11.5).color(col));
+            });
+        });
+
+        match &u.state {
+            TransferState::Queued | TransferState::Active => {
+                let color = if u.state == TransferState::Queued { p.text3 } else { p.accent };
+                thin_progress_colored(ui, t.frac(), color);
+                let stalled = t.last_update.elapsed() > Duration::from_secs(3) && u.bytes < u.total;
+                let left = if u.state == TransferState::Queued {
+                    format!("{}", human_size(u.total))
+                } else {
+                    format!("{} of {} \u{00B7} {:.0}%", human_size(u.bytes), human_size(u.total), t.frac() * 100.0)
+                };
+                let right = if u.state == TransferState::Queued {
+                    "Queued".to_string()
+                } else if stalled {
+                    "Waiting for device...".to_string()
+                } else if t.speed <= 0.0 {
+                    "Connecting...".to_string()
+                } else {
+                    let left_bytes = u.total.saturating_sub(u.bytes) as f64;
+                    format!(
+                        "{} \u{00B7} {}",
+                        human_speed(t.speed),
+                        human_eta((left_bytes / t.speed).ceil() as u64)
+                    )
+                };
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(left).size(11.5).color(p.text2));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(RichText::new(right).size(11.5).color(p.text2));
+                    });
+                });
+            }
+            TransferState::Done => {}
+            TransferState::Failed(reason) => {
+                ui.label(RichText::new(shorten(reason, 120)).size(12.0).color(p.text2));
+                if capsule(ui, "Dismiss", Look::Glass, 26.0, None, true).clicked() {
+                    actions.push(Action::Dismiss(u.id));
+                }
+            }
+        }
+    });
+}
+
 enum Action {
     SendClipboard,
     StartPairing,
@@ -600,6 +805,9 @@ enum Action {
     Copy(usize),
     Reveal(usize),
     Remove(usize),
+    Dismiss(u64),
+    ClearFinished,
+    ClearShelf,
 }
 
 struct ShelfApp {
@@ -615,7 +823,8 @@ struct ShelfApp {
     items: Vec<ShelfItem>,
     target: Target,
     status: String,
-    progress: Option<(String, u8)>,
+    transfers: Vec<TransferRow>,
+    clear_armed_until: Option<Instant>,
     my_code: Option<(String, Instant)>,
     pair_dialog: Option<PairDialog>,
 
@@ -653,7 +862,8 @@ impl ShelfApp {
             items: Vec::new(),
             target: Target::All,
             status: String::new(),
-            progress: None,
+            transfers: Vec::new(),
+            clear_armed_until: None,
             my_code: None,
             pair_dialog: None,
             auto_copy: true,
@@ -713,20 +923,10 @@ impl ShelfApp {
                         clip::copy_item(&item);
                     }
                     self.set_status(format!("Received {} from {}", item.name, item.from));
-                    self.progress = None;
                     self.items.insert(0, ShelfItem { item, received: Instant::now() });
                     self.open_for(4);
                 }
-                Event::Progress { name, to, percent } => {
-                    self.progress = Some((format!("{name} to {to}"), percent));
-                }
-                Event::SendDone { to, item, error } => {
-                    self.progress = None;
-                    match error {
-                        None => self.set_status(format!("Sent {item} to {to}")),
-                        Some(e) => self.set_status(format!("Could not send {item} to {to}: {e}")),
-                    }
-                }
+                Event::Transfer(u) => self.on_transfer(u),
                 Event::Info(s) => self.set_status(s),
                 Event::Error(s) => self.set_status(s),
             }
@@ -738,6 +938,44 @@ impl ShelfApp {
                     self.handle.send(Command::Send { target: self.target.clone(), payload });
                 }
                 Err(e) => self.set_status(e),
+            }
+        }
+    }
+
+    fn on_transfer(&mut self, u: TransferUpdate) {
+        let up = u.dir == TransferDir::Upload;
+        match &u.state {
+            TransferState::Done if up => {
+                self.set_status(format!("Sent {} to {}", u.name, u.peer));
+            }
+            TransferState::Failed(e) => {
+                let msg = if up {
+                    format!("Could not send {} to {}: {e}", u.name, u.peer)
+                } else {
+                    format!("Could not receive {} from {}: {e}", u.name, u.peer)
+                };
+                self.set_status(msg);
+                self.open_for(6);
+            }
+            _ => {}
+        }
+        match self.transfers.iter_mut().find(|t| t.u.id == u.id) {
+            Some(row) => row.apply(u),
+            None => {
+                // Something incoming: slide the shelf out so the progress is visible.
+                if u.dir == TransferDir::Download {
+                    self.open_for(3);
+                }
+                self.transfers.push(TransferRow::new(u));
+            }
+        }
+        // Failed items stay until dismissed; keep the list from growing without bound.
+        while self.transfers.len() > 30 {
+            match self.transfers.iter().position(|t| !t.is_live()) {
+                Some(i) => {
+                    self.transfers.remove(i);
+                }
+                None => break,
             }
         }
     }
@@ -870,6 +1108,14 @@ impl eframe::App for ShelfApp {
                 self.my_code = None;
             }
         }
+        // Finished transfers fade away after a few seconds; failures stay until dismissed.
+        self.transfers.retain(|t| {
+            !(t.u.state == TransferState::Done
+                && t.finished_at.map(|f| f.elapsed() > Duration::from_secs(4)).unwrap_or(false))
+        });
+        if self.clear_armed_until.map(|t| Instant::now() > t).unwrap_or(false) {
+            self.clear_armed_until = None;
+        }
 
         let hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
         let pointer_inside = ctx.input(|i| i.pointer.hover_pos().is_some());
@@ -898,12 +1144,21 @@ impl eframe::App for ShelfApp {
                     Pos2::new(full.right() - 6.0, full.center().y),
                     vec2(5.0, 76.0),
                 );
-                let col = if self.items.is_empty() {
-                    if p.dark { Color32::from_white_alpha(120) } else { Color32::from_black_alpha(90) }
+                let dim = if p.dark { Color32::from_white_alpha(120) } else { Color32::from_black_alpha(90) };
+                let live: Vec<&TransferRow> = self.transfers.iter().filter(|t| t.is_live()).collect();
+                let total: u64 = live.iter().map(|t| t.u.total).sum();
+                if !live.is_empty() {
+                    // Transfers running: the grabber fills up from the bottom like a progress bar.
+                    let done: u64 = live.iter().map(|t| t.u.bytes).sum();
+                    let frac = if total == 0 { 0.0 } else { (done as f32 / total as f32).clamp(0.0, 1.0) };
+                    ui.painter().rect_filled(pill, 2.5, dim.gamma_multiply(0.5));
+                    let mut fill = pill;
+                    fill.min.y = pill.max.y - pill.height() * frac.max(0.08);
+                    ui.painter().rect_filled(fill, 2.5, p.accent);
                 } else {
-                    p.accent
-                };
-                ui.painter().rect_filled(pill, 2.5, col);
+                    let col = if self.items.is_empty() { dim } else { p.accent };
+                    ui.painter().rect_filled(pill, 2.5, col);
+                }
                 return;
             }
 
@@ -960,14 +1215,6 @@ impl eframe::App for ShelfApp {
                     if !self.status.is_empty() {
                         status_pill(ui, &self.status);
                     }
-                    if let Some((label, pct)) = &self.progress {
-                        ui.label(
-                            RichText::new(format!("{} ({}%)", shorten(label, 34), pct))
-                                .size(11.5)
-                                .color(p.text2),
-                        );
-                        thin_progress(ui, *pct as f32 / 100.0);
-                    }
 
                     // Drop zone and clipboard.
                     drop_zone(ui, hovering_files);
@@ -982,6 +1229,24 @@ impl eframe::App for ShelfApp {
                     .clicked()
                     {
                         actions.push(Action::SendClipboard);
+                    }
+
+                    // Transfers: progress, speed, time left and failures per item.
+                    if !self.transfers.is_empty() {
+                        let any_failed = self
+                            .transfers
+                            .iter()
+                            .any(|t| matches!(t.u.state, TransferState::Failed(_)));
+                        section_header(ui, "Transfers", |ui| {
+                            if any_failed
+                                && capsule(ui, "Clear failed", Look::Glass, 24.0, None, true).clicked()
+                            {
+                                actions.push(Action::ClearFinished);
+                            }
+                        });
+                        for t in &self.transfers {
+                            transfer_card(ui, t, &mut actions);
+                        }
                     }
 
                     // Settings.
@@ -1225,7 +1490,20 @@ impl eframe::App for ShelfApp {
                         });
 
                     // The shelf itself.
-                    section_label(ui, "On the shelf");
+                    let armed = self.clear_armed_until.is_some();
+                    let has_items = !self.items.is_empty();
+                    section_header(ui, "On the shelf", |ui| {
+                        if has_items {
+                            let (label, look) = if armed {
+                                ("Click again to clear", Look::Solid(p.red))
+                            } else {
+                                ("Clear all", Look::Tint(p.red))
+                            };
+                            if capsule(ui, label, look, 24.0, None, true).clicked() {
+                                actions.push(Action::ClearShelf);
+                            }
+                        }
+                    });
                     if self.items.is_empty() {
                         card(ui, |ui| {
                             ui.vertical_centered(|ui| {
@@ -1347,6 +1625,22 @@ impl eframe::App for ShelfApp {
                     }
                 }
                 Action::Remove(i) => remove.push(i),
+                Action::Dismiss(id) => self.transfers.retain(|t| t.u.id != id),
+                Action::ClearFinished => self.transfers.retain(|t| t.is_live()),
+                Action::ClearShelf => {
+                    if self.clear_armed_until.is_some() {
+                        let n = self.items.len();
+                        for it in self.items.drain(..) {
+                            if let Some(path) = it.item.path {
+                                let _ = std::fs::remove_file(path);
+                            }
+                        }
+                        self.clear_armed_until = None;
+                        self.status = format!("Cleared {n} item{}", if n == 1 { "" } else { "s" });
+                    } else {
+                        self.clear_armed_until = Some(Instant::now() + Duration::from_secs(3));
+                    }
+                }
             }
         }
         remove.sort_unstable();

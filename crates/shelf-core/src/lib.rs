@@ -9,6 +9,7 @@ pub mod store;
 
 pub use engine::{
     start, Command, Event, Handle, NearbyDevice, Payload, PeerStatus, ReceivedItem, Target,
+    TransferDir, TransferState, TransferUpdate,
 };
 pub use protocol::ItemKind;
 pub use store::inbox_dir;

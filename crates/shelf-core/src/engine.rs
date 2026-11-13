@@ -22,6 +22,8 @@ use tokio::time::timeout;
 
 const SERVICE_TYPE: &str = "_shelf._tcp.local.";
 const PAIR_TTL: Duration = Duration::from_secs(120);
+/// How often byte counts are reported for a running transfer.
+const PROGRESS_EVERY: Duration = Duration::from_millis(120);
 
 // ---------------------------------------------------------------- public types
 
@@ -73,6 +75,33 @@ pub struct ReceivedItem {
     pub text: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransferDir {
+    Upload,
+    Download,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TransferState {
+    /// Waiting for earlier items to finish.
+    Queued,
+    Active,
+    Done,
+    Failed(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct TransferUpdate {
+    pub id: u64,
+    pub dir: TransferDir,
+    pub name: String,
+    /// The other device.
+    pub peer: String,
+    pub bytes: u64,
+    pub total: u64,
+    pub state: TransferState,
+}
+
 pub enum Event {
     Ready { device_name: String, public_key: String },
     Peers { paired: Vec<PeerStatus>, nearby: Vec<NearbyDevice> },
@@ -80,8 +109,8 @@ pub enum Event {
     PairingCleared,
     PairingResult(Result<String, String>),
     Received(ReceivedItem),
-    Progress { name: String, to: String, percent: u8 },
-    SendDone { to: String, item: String, error: Option<String> },
+    /// Progress of one item being sent or received. The UI derives speed and time left.
+    Transfer(TransferUpdate),
     Info(String),
     Error(String),
 }
@@ -205,12 +234,39 @@ impl Shared {
         Ok(hex::decode(hex_key)?)
     }
 
-    fn finish_send(&self, to: &str, item: String, res: Result<()>) {
-        self.emit(Event::SendDone {
-            to: to.to_string(),
-            item,
-            error: res.err().map(|e| e.to_string()),
-        });
+    fn new_id(&self) -> u64 {
+        self.next_id.fetch_add(1, Ordering::SeqCst)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn transfer(
+        &self,
+        id: u64,
+        dir: TransferDir,
+        name: &str,
+        peer: &str,
+        bytes: u64,
+        total: u64,
+        state: TransferState,
+    ) {
+        self.emit(Event::Transfer(TransferUpdate {
+            id,
+            dir,
+            name: name.to_string(),
+            peer: peer.to_string(),
+            bytes,
+            total,
+            state,
+        }));
+    }
+
+    fn finish_send(&self, id: u64, name: &str, peer: &str, total: u64, res: Result<()>) {
+        let state = match res {
+            Ok(()) => TransferState::Done,
+            Err(e) => TransferState::Failed(e.to_string()),
+        };
+        let bytes = if state == TransferState::Done { total } else { 0 };
+        self.transfer(id, TransferDir::Upload, name, peer, bytes, total, state);
     }
 }
 
@@ -502,7 +558,12 @@ fn unique_inbox_path(inbox: &Path, name: &str) -> PathBuf {
     }
 }
 
-async fn receive_to_file(ch: &mut SecureChannel, path: &Path, size: u64) -> Result<()> {
+async fn receive_to_file(
+    ch: &mut SecureChannel,
+    path: &Path,
+    size: u64,
+    on_progress: &mut (dyn FnMut(u64) + Send),
+) -> Result<()> {
     let mut f = tokio::fs::File::create(path).await?;
     let mut left = size;
     while left > 0 {
@@ -512,6 +573,7 @@ async fn receive_to_file(ch: &mut SecureChannel, path: &Path, size: u64) -> Resu
         }
         f.write_all(&chunk).await?;
         left -= chunk.len() as u64;
+        on_progress(size - left);
     }
     f.flush().await?;
     Ok(())
@@ -532,35 +594,62 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
         bail!("item name too long");
     }
     let limit = if header.kind == ItemKind::Text { MAX_TEXT_BYTES } else { MAX_FILE_BYTES };
+    let id = shared.new_id();
+    let (name, size) = (header.name.clone(), header.size);
     if header.size > limit {
-        bail!("item from {} is too large", peer.name);
+        let msg = "too large to receive".to_string();
+        shared.transfer(id, TransferDir::Download, &name, &peer.name, 0, size, TransferState::Failed(msg));
+        return Ok(());
     }
+    shared.transfer(id, TransferDir::Download, &name, &peer.name, 0, size, TransferState::Active);
 
-    let (path, text) = if header.kind == ItemKind::Text {
-        let mut buf = Vec::with_capacity(header.size as usize);
-        let mut left = header.size;
-        while left > 0 {
-            let chunk = ch.recv().await?;
-            if chunk.is_empty() || chunk.len() as u64 > left {
-                bail!("corrupt transfer");
+    let result: Result<(Option<PathBuf>, Option<String>)> = async {
+        if header.kind == ItemKind::Text {
+            let mut buf = Vec::with_capacity(header.size as usize);
+            let mut left = header.size;
+            while left > 0 {
+                let chunk = ch.recv().await?;
+                if chunk.is_empty() || chunk.len() as u64 > left {
+                    bail!("corrupt transfer");
+                }
+                left -= chunk.len() as u64;
+                buf.extend_from_slice(&chunk);
             }
-            left -= chunk.len() as u64;
-            buf.extend_from_slice(&chunk);
+            let text = String::from_utf8(buf).map_err(|_| anyhow!("text was not valid UTF-8"))?;
+            Ok((None, Some(text)))
+        } else {
+            let inbox = inbox_dir();
+            tokio::fs::create_dir_all(&inbox).await?;
+            let path = unique_inbox_path(&inbox, &header.name);
+            let mut last = Instant::now();
+            let sh = shared.clone();
+            let (n, from) = (name.clone(), peer.name.clone());
+            let mut on_progress = move |done: u64| {
+                if last.elapsed() >= PROGRESS_EVERY {
+                    last = Instant::now();
+                    sh.transfer(id, TransferDir::Download, &n, &from, done, size, TransferState::Active);
+                }
+            };
+            if let Err(e) = receive_to_file(&mut ch, &path, header.size, &mut on_progress).await {
+                let _ = tokio::fs::remove_file(&path).await;
+                return Err(e);
+            }
+            Ok((Some(path), None))
         }
-        let text = String::from_utf8(buf).map_err(|_| anyhow!("text was not valid UTF-8"))?;
-        (None, Some(text))
-    } else {
-        let inbox = inbox_dir();
-        tokio::fs::create_dir_all(&inbox).await?;
-        let path = unique_inbox_path(&inbox, &header.name);
-        if let Err(e) = receive_to_file(&mut ch, &path, header.size).await {
-            let _ = tokio::fs::remove_file(&path).await;
-            return Err(e);
+    }
+    .await;
+
+    let (path, text) = match result {
+        Ok(v) => v,
+        Err(e) => {
+            let state = TransferState::Failed(e.to_string());
+            shared.transfer(id, TransferDir::Download, &name, &peer.name, 0, size, state);
+            return Ok(());
         }
-        (Some(path), None)
     };
 
     ch.send(b"OK").await?;
+    shared.transfer(id, TransferDir::Download, &name, &peer.name, size, size, TransferState::Done);
     shared.emit(Event::Received(ReceivedItem {
         id: rand::random::<u64>(),
         kind: header.kind,
@@ -581,7 +670,10 @@ async fn push_item<R: AsyncRead + Unpin>(
     header: ItemHeader,
     mut reader: R,
     label: &str,
+    id: u64,
 ) -> Result<()> {
+    let total = header.size;
+    shared.transfer(id, TransferDir::Upload, label, &dest.name, 0, total, TransferState::Active);
     let key = shared.private_key()?;
     let mut stream = timeout(Duration::from_secs(5), TcpStream::connect(dest.addr)).await??;
     stream.write_u8(b'T').await?;
@@ -594,7 +686,7 @@ async fn push_item<R: AsyncRead + Unpin>(
 
     let mut buf = vec![0u8; CHUNK];
     let mut left = header.size;
-    let mut last_pct = 0u8;
+    let mut last = Instant::now();
     while left > 0 {
         let want = std::cmp::min(left, CHUNK as u64) as usize;
         let n = reader.read(&mut buf[..want]).await?;
@@ -604,14 +696,17 @@ async fn push_item<R: AsyncRead + Unpin>(
         ch.send(&buf[..n]).await?;
         left -= n as u64;
 
-        let pct = (((header.size - left) * 100) / header.size) as u8;
-        if pct != last_pct && (pct - last_pct >= 5 || pct == 100) {
-            last_pct = pct;
-            shared.emit(Event::Progress {
-                name: label.to_string(),
-                to: dest.name.clone(),
-                percent: pct,
-            });
+        if last.elapsed() >= PROGRESS_EVERY {
+            last = Instant::now();
+            shared.transfer(
+                id,
+                TransferDir::Upload,
+                label,
+                &dest.name,
+                total - left,
+                total,
+                TransferState::Active,
+            );
         }
     }
 
@@ -622,7 +717,13 @@ async fn push_item<R: AsyncRead + Unpin>(
     Ok(())
 }
 
-async fn send_file(shared: &Arc<Shared>, dest: &Dest, path: &Path, label: &str) -> Result<()> {
+async fn send_file(
+    shared: &Arc<Shared>,
+    dest: &Dest,
+    path: &Path,
+    label: &str,
+    id: u64,
+) -> Result<()> {
     let meta = tokio::fs::metadata(path).await?;
     if meta.is_dir() {
         bail!("folders are not supported yet");
@@ -636,35 +737,64 @@ async fn send_file(shared: &Arc<Shared>, dest: &Dest, path: &Path, label: &str) 
         name: label.to_string(),
         size: meta.len(),
     };
-    push_item(shared, dest, header, file, label).await
+    push_item(shared, dest, header, file, label, id).await
 }
 
 async fn send_payload(shared: Arc<Shared>, targets: Vec<Dest>, payload: Payload) {
-    for dest in targets {
+    // Files are announced up front as "queued" so the UI can show the whole batch.
+    let file_jobs: Vec<Vec<(u64, String, u64)>> = match &payload {
+        Payload::Files(paths) => targets
+            .iter()
+            .map(|dest| {
+                paths
+                    .iter()
+                    .map(|path| {
+                        let id = shared.new_id();
+                        let label = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "file".to_string());
+                        let total = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                        shared.transfer(
+                            id,
+                            TransferDir::Upload,
+                            &label,
+                            &dest.name,
+                            0,
+                            total,
+                            TransferState::Queued,
+                        );
+                        (id, label, total)
+                    })
+                    .collect()
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+
+    for (di, dest) in targets.iter().enumerate() {
         match &payload {
             Payload::Files(paths) => {
-                for path in paths {
-                    let label = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "file".to_string());
-                    let res = send_file(&shared, &dest, path, &label).await;
-                    shared.finish_send(&dest.name, label, res);
+                for (path, (id, label, total)) in paths.iter().zip(&file_jobs[di]) {
+                    let res = send_file(&shared, dest, path, label, *id).await;
+                    shared.finish_send(*id, label, &dest.name, *total, res);
                 }
             }
             Payload::Text(text) => {
                 let bytes = text.as_bytes();
-                let res = if bytes.len() as u64 > MAX_TEXT_BYTES {
+                let id = shared.new_id();
+                let total = bytes.len() as u64;
+                let res = if total > MAX_TEXT_BYTES {
                     Err(anyhow!("text is larger than 1 MB"))
                 } else {
                     let header = ItemHeader {
                         kind: ItemKind::Text,
                         name: "Text".to_string(),
-                        size: bytes.len() as u64,
+                        size: total,
                     };
-                    push_item(&shared, &dest, header, bytes, "Text").await
+                    push_item(&shared, dest, header, bytes, "Text", id).await
                 };
-                shared.finish_send(&dest.name, "Text".to_string(), res);
+                shared.finish_send(id, "Text", &dest.name, total, res);
             }
             Payload::Image(png) => {
                 let stamp = std::time::SystemTime::now()
@@ -672,13 +802,15 @@ async fn send_payload(shared: Arc<Shared>, targets: Vec<Dest>, payload: Payload)
                     .map(|d| d.as_secs())
                     .unwrap_or(0);
                 let label = format!("Image-{stamp}.png");
+                let id = shared.new_id();
+                let total = png.len() as u64;
                 let header = ItemHeader {
                     kind: ItemKind::Image,
                     name: label.clone(),
-                    size: png.len() as u64,
+                    size: total,
                 };
-                let res = push_item(&shared, &dest, header, &png[..], &label).await;
-                shared.finish_send(&dest.name, label, res);
+                let res = push_item(&shared, dest, header, &png[..], &label, id).await;
+                shared.finish_send(id, &label, &dest.name, total, res);
             }
         }
     }
