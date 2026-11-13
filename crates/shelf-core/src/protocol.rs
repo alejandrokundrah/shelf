@@ -18,6 +18,8 @@ pub struct ItemHeader {
     pub name: String,
     pub size: u64,
     pub hash: [u8; 32],
+    #[serde(default)]
+    pub room_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

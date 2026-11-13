@@ -12,5 +12,5 @@ pub use engine::{
     TransferDirection,
 };
 pub use protocol::{ItemKind, RoomMessage};
-pub use store::inbox_dir;
+pub use store::{inbox_dir, room_dir};
 pub use store::{Room, RoomFile, RoomMember, RoomRole};

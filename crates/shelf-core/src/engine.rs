@@ -50,6 +50,7 @@ pub enum Command {
         room_id: String,
         invite_code: String,
     },
+    UploadRoomFile { room_id: String, path: PathBuf },
     StartPairing,
     CancelPairing,
     PairWith { addr: SocketAddr, code: String },
@@ -407,6 +408,31 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                         s.emit(Event::Error(format!("room join failed: {e}")));
                     }
                 });
+            }
+            Command::UploadRoomFile { room_id, path } => {
+                let targets = shared
+                    .config
+                    .lock()
+                    .unwrap()
+                    .rooms
+                    .iter()
+                    .find(|room| room.id == room_id)
+                    .map(|room| {
+                        Target::Peers(
+                            room.members
+                                .iter()
+                                .filter(|member| member.public_key != room.owner_public_key)
+                                .map(|member| member.public_key.clone())
+                                .collect(),
+                        )
+                    });
+                let targets = targets.map(|target| shared.targets(&target)).unwrap_or_default();
+                if targets.is_empty() {
+                    shared.emit(Event::Error("No room members are nearby".into()));
+                } else {
+                    let s = shared.clone();
+                    tokio::spawn(send_room_file(s, targets, room_id, path));
+                }
             }
             Command::StartPairing => {
                 let code = format!("{:06}", rand::thread_rng().gen_range(0..1_000_000u32));
@@ -864,9 +890,13 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
         let text = String::from_utf8(buf).map_err(|_| anyhow!("text was not valid UTF-8"))?;
         (None, Some(text))
     } else {
-        let inbox = inbox_dir();
-        tokio::fs::create_dir_all(&inbox).await?;
-        let partial = inbox.join(format!(".shelf-{}.part", hex::encode(header.hash)));
+        let base = header
+            .room_id
+            .as_deref()
+            .map(crate::store::room_dir)
+            .unwrap_or_else(inbox_dir);
+        tokio::fs::create_dir_all(&base).await?;
+        let partial = base.join(format!(".shelf-{}.part", hex::encode(header.hash)));
         let offset = tokio::fs::metadata(&partial)
             .await
             .map(|m| m.len().min(header.size))
@@ -886,13 +916,29 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
             offset,
         )
         .await?;
-        let path = unique_inbox_path(&inbox, &header.name);
+        let path = unique_inbox_path(&base, &header.name);
         tokio::fs::rename(&partial, &path).await?;
         (Some(path), None)
     };
 
     ch.send(b"OK").await?;
     shared.received_hashes.lock().unwrap().insert(header.hash);
+    if let Some(room_id) = &header.room_id {
+        let mut config = shared.config.lock().unwrap();
+        if let Some(room) = config.rooms.iter_mut().find(|room| &room.id == room_id) {
+            room.add_file(crate::store::RoomFile {
+                hash: hex::encode(header.hash),
+                name: header.name.clone(),
+                size: header.size,
+                uploaded_by: peer.name.clone(),
+                uploaded_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or_default(),
+            });
+            config.save()?;
+        }
+    }
     shared.emit(Event::Received(ReceivedItem {
         id: rand::random::<u64>(),
         kind: header.kind,
@@ -989,7 +1035,13 @@ async fn push_item<R: AsyncRead + Unpin>(
     Ok(())
 }
 
-async fn send_file(shared: &Arc<Shared>, dest: &Dest, path: &Path, label: &str) -> Result<()> {
+async fn send_file(
+    shared: &Arc<Shared>,
+    dest: &Dest,
+    path: &Path,
+    label: &str,
+    room_id: Option<&str>,
+) -> Result<()> {
     let meta = tokio::fs::metadata(path).await?;
     if meta.is_dir() {
         bail!("folders are not supported yet");
@@ -1013,6 +1065,7 @@ async fn send_file(shared: &Arc<Shared>, dest: &Dest, path: &Path, label: &str) 
         name: label.to_string(),
         size: meta.len(),
         hash,
+        room_id: room_id.map(str::to_owned),
     };
     let mut last_error = None;
     for attempt in 0..3 {
@@ -1043,7 +1096,7 @@ async fn send_payload(shared: Arc<Shared>, targets: Vec<Dest>, payload: Payload)
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_else(|| "file".to_string());
-                    let res = send_file(&shared, &dest, path, &label).await;
+                    let res = send_file(&shared, &dest, path, &label, None).await;
                     shared.finish_send(&dest.name, label, res);
                 }
             }
@@ -1057,6 +1110,7 @@ async fn send_payload(shared: Arc<Shared>, targets: Vec<Dest>, payload: Payload)
                         name: "Text".to_string(),
                         size: bytes.len() as u64,
                         hash: Sha256::digest(bytes).into(),
+                        room_id: None,
                     };
                     push_item(&shared, &dest, header, bytes, "Text").await
                 };
@@ -1073,10 +1127,22 @@ async fn send_payload(shared: Arc<Shared>, targets: Vec<Dest>, payload: Payload)
                     name: label.clone(),
                     size: png.len() as u64,
                     hash: Sha256::digest(png).into(),
+                    room_id: None,
                 };
                 let res = push_item(&shared, &dest, header, &png[..], &label).await;
                 shared.finish_send(&dest.name, label, res);
             }
         }
+    }
+}
+
+async fn send_room_file(shared: Arc<Shared>, targets: Vec<Dest>, room_id: String, path: PathBuf) {
+    let label = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+    for dest in targets {
+        let result = send_file(&shared, &dest, &path, &label, Some(&room_id)).await;
+        shared.finish_send(&dest.name, label.clone(), result);
     }
 }

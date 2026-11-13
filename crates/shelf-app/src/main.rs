@@ -651,6 +651,7 @@ struct ShelfApp {
     audit: Vec<String>,
     rooms: Vec<Room>,
     room_name_input: String,
+    active_room_id: Option<String>,
     room_id_input: String,
     room_code_input: String,
     my_code: Option<(String, Instant)>,
@@ -709,6 +710,7 @@ impl ShelfApp {
             audit: Vec::new(),
             rooms: Vec::new(),
             room_name_input: String::new(),
+            active_room_id: None,
             room_id_input: String::new(),
             room_code_input: String::new(),
             my_code: None,
@@ -1027,11 +1029,21 @@ impl eframe::App for ShelfApp {
             i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect()
         });
         if !dropped.is_empty() {
-            self.set_status(format!("Sending {} file(s)...", dropped.len()));
-            self.handle.send(Command::Send {
-                target: self.target.clone(),
-                payload: Payload::Files(dropped),
-            });
+            if let Some(room_id) = self.active_room_id.clone() {
+                self.set_status(format!("Uploading {} file(s) to room...", dropped.len()));
+                for path in dropped {
+                    self.handle.send(Command::UploadRoomFile {
+                        room_id: room_id.clone(),
+                        path,
+                    });
+                }
+            } else {
+                self.set_status(format!("Sending {} file(s)...", dropped.len()));
+                self.handle.send(Command::Send {
+                    target: self.target.clone(),
+                    payload: Payload::Files(dropped),
+                });
+            }
             self.open_for(3);
         }
 
@@ -1068,6 +1080,7 @@ impl eframe::App for ShelfApp {
         let collapsed = self.cur_w < 80.0;
         let paired = self.paired.clone();
         let nearby = self.nearby.clone();
+        let rooms = self.rooms.clone();
         let mut actions: Vec<Action> = Vec::new();
 
         egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
@@ -1334,7 +1347,7 @@ impl eframe::App for ShelfApp {
                                         }
                                     }
                                 }
-                                if self.rooms.is_empty() {
+                                if rooms.is_empty() {
                                     ui.label(
                                         RichText::new(
                                             "Create a room to share work with classmates or teammates.",
@@ -1343,7 +1356,7 @@ impl eframe::App for ShelfApp {
                                         .color(p.text2),
                                     );
                                 } else {
-                                    for room in &self.rooms {
+                                    for room in &rooms {
                                         hairline(ui);
                                         ui.horizontal(|ui| {
                                             ui.vertical(|ui| {
@@ -1379,6 +1392,21 @@ impl eframe::App for ShelfApp {
                                                     );
                                                 }
                                             });
+                                            let active =
+                                                self.active_room_id.as_deref() == Some(room.id.as_str());
+                                            if capsule(
+                                                ui,
+                                                if active { "Dropbox active" } else { "Use dropbox" },
+                                                if active { Look::Primary } else { Look::Glass },
+                                                26.0,
+                                                None,
+                                                true,
+                                            )
+                                            .clicked()
+                                            {
+                                                self.active_room_id =
+                                                    if active { None } else { Some(room.id.clone()) };
+                                            }
                                         });
                                     }
                                 }

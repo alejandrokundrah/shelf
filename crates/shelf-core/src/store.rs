@@ -100,6 +100,10 @@ pub fn inbox_dir() -> PathBuf {
     data_dir().join("inbox")
 }
 
+pub fn room_dir(room_id: &str) -> PathBuf {
+    data_dir().join("rooms").join(room_id)
+}
+
 fn config_path() -> PathBuf {
     data_dir().join("config.json")
 }
