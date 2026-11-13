@@ -631,6 +631,7 @@ enum Action {
     CancelTransfers,
     CreateRoom,
     JoinRoom(SocketAddr),
+    DeleteRoomFile { room_id: String, hash: String },
 }
 
 struct ShelfApp {
@@ -1408,6 +1409,35 @@ impl eframe::App for ShelfApp {
                                                     if active { None } else { Some(room.id.clone()) };
                                             }
                                         });
+                                        for file in room.files.iter().take(20) {
+                                            ui.horizontal(|ui| {
+                                                ui.label(
+                                                    RichText::new(format!(
+                                                        "{} · {}",
+                                                        shorten(&file.name, 28),
+                                                        human_size(file.size)
+                                                    ))
+                                                    .size(11.5)
+                                                    .color(p.text2),
+                                                );
+                                                if room.owner_public_key == self.device_public_key
+                                                    && capsule(
+                                                        ui,
+                                                        "Delete",
+                                                        Look::Tint(p.red),
+                                                        24.0,
+                                                        None,
+                                                        true,
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    actions.push(Action::DeleteRoomFile {
+                                                        room_id: room.id.clone(),
+                                                        hash: file.hash.clone(),
+                                                    });
+                                                }
+                                            });
+                                        }
                                     }
                                 }
                             });
@@ -1808,6 +1838,9 @@ impl eframe::App for ShelfApp {
                         });
                         self.set_status("Joining room...");
                     }
+                }
+                Action::DeleteRoomFile { room_id, hash } => {
+                    self.handle.send(Command::DeleteRoomFile { room_id, hash });
                 }
             }
         }

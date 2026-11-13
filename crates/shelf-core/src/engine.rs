@@ -51,6 +51,7 @@ pub enum Command {
         invite_code: String,
     },
     UploadRoomFile { room_id: String, path: PathBuf },
+    DeleteRoomFile { room_id: String, hash: String },
     StartPairing,
     CancelPairing,
     PairWith { addr: SocketAddr, code: String },
@@ -434,6 +435,44 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                     tokio::spawn(send_room_file(s, targets, room_id, path));
                 }
             }
+            Command::DeleteRoomFile { room_id, hash } => {
+                let (targets, file_name) = {
+                    let config = shared.config.lock().unwrap();
+                    match config.rooms.iter().find(|room| room.id == room_id) {
+                        Some(room) if room.owner_public_key == config.public_key => {
+                            let file_name = room
+                                .files
+                                .iter()
+                                .find(|file| file.hash == hash)
+                                .map(|file| file.name.clone());
+                            let target = Target::Peers(
+                                room.members
+                                    .iter()
+                                    .filter(|member| member.public_key != config.public_key)
+                                    .map(|member| member.public_key.clone())
+                                    .collect(),
+                            );
+                            (shared.targets(&target), file_name)
+                        }
+                        _ => (Vec::new(), None),
+                    }
+                };
+                if let Some(file_name) = file_name {
+                    let path = crate::store::room_dir(&room_id).join(&file_name);
+                    let _ = std::fs::remove_file(path);
+                    let mut config = shared.config.lock().unwrap();
+                    let local_key = config.public_key.clone();
+                    if let Some(room) = config.rooms.iter_mut().find(|room| room.id == room_id) {
+                        room.delete_file(&local_key, &hash);
+                    }
+                    config.save().ok();
+                    let s = shared.clone();
+                    tokio::spawn(broadcast_room_delete(s, targets, room_id, hash));
+                    shared.emit(Event::Info(format!("Deleted {file_name} from room")));
+                } else {
+                    shared.emit(Event::Error("Only the room owner can delete files".into()));
+                }
+            }
             Command::StartPairing => {
                 let code = format!("{:06}", rand::thread_rng().gen_range(0..1_000_000u32));
                 let id = shared.next_id.fetch_add(1, Ordering::SeqCst);
@@ -569,6 +608,33 @@ async fn handle_room_connection(shared: &Arc<Shared>, stream: TcpStream) -> Resu
     }
     .ok_or_else(|| anyhow!("room connection rejected from an unpaired device"))?;
     let message: RoomMessage = serde_json::from_slice(&ch.recv().await?)?;
+    if let RoomMessage::Delete { room_id, hash } = message {
+        let file_name = {
+            let mut config = shared.config.lock().unwrap();
+            let local_key = config.public_key.clone();
+            let room = config
+                .rooms
+                .iter_mut()
+                .find(|room| room.id == room_id)
+                .ok_or_else(|| anyhow!("room not found"))?;
+            if room.owner_public_key != hex::encode(&ch.remote_static) {
+                bail!("only the room owner may delete files");
+            }
+            let name = room
+                .files
+                .iter()
+                .find(|file| file.hash == hash)
+                .map(|file| file.name.clone());
+            room.delete_file(&local_key, &hash);
+            config.save()?;
+            name
+        };
+        if let Some(file_name) = file_name {
+            let _ = std::fs::remove_file(crate::store::room_dir(&room_id).join(file_name));
+        }
+        ch.send(b"OK").await?;
+        return Ok(());
+    }
     let RoomMessage::Join {
         room_id,
         invite_code,
@@ -576,7 +642,7 @@ async fn handle_room_connection(shared: &Arc<Shared>, stream: TcpStream) -> Resu
         member_public_key,
     } = message
     else {
-        bail!("expected room join message");
+        bail!("expected room join or delete message");
     };
 
     let manifest = {
@@ -629,6 +695,42 @@ async fn handle_room_connection(shared: &Arc<Shared>, stream: TcpStream) -> Resu
     ch.send(&serde_json::to_vec(&manifest)?).await?;
     shared.emit(Event::Info(format!("{} joined room {}", peer.name, room_id)));
     Ok(())
+}
+
+async fn broadcast_room_delete(
+    shared: Arc<Shared>,
+    targets: Vec<Dest>,
+    room_id: String,
+    hash: String,
+) {
+    for dest in targets {
+        let result = async {
+            let key = shared.private_key()?;
+            let mut stream =
+                timeout(Duration::from_secs(5), TcpStream::connect(dest.addr)).await??;
+            stream.write_u8(b'R').await?;
+            let mut ch =
+                timeout(Duration::from_secs(10), SecureChannel::initiate(stream, &key)).await??;
+            ch.send(
+                &serde_json::to_vec(&RoomMessage::Delete {
+                    room_id: room_id.clone(),
+                    hash: hash.clone(),
+                })?,
+            )
+            .await?;
+            if ch.recv().await? != b"OK" {
+                bail!("member did not confirm deletion");
+            }
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+        if let Err(error) = result {
+            shared.emit(Event::Error(format!(
+                "room deletion failed for {}: {error}",
+                dest.name
+            )));
+        }
+    }
 }
 
 async fn join_room(
