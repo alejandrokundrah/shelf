@@ -9,6 +9,27 @@ pub struct PairedPeer {
     pub public_key: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoomRole {
+    Owner,
+    Member,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RoomMember {
+    pub name: String,
+    pub public_key: String,
+    pub role: RoomRole,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Room {
+    pub id: String,
+    pub name: String,
+    pub owner_public_key: String,
+    pub members: Vec<RoomMember>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Config {
     pub device_name: String,
@@ -17,6 +38,8 @@ pub struct Config {
     pub public_key: String,
     #[serde(default)]
     pub peers: Vec<PairedPeer>,
+    #[serde(default)]
+    pub rooms: Vec<Room>,
 }
 
 pub fn data_dir() -> PathBuf {
@@ -52,6 +75,7 @@ impl Config {
             private_key: hex::encode(&kp.private),
             public_key: hex::encode(&kp.public),
             peers: Vec::new(),
+            rooms: Vec::new(),
         };
         cfg.save()?;
         Ok(cfg)
