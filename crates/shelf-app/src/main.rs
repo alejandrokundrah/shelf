@@ -13,7 +13,7 @@ use shelf_core::{
 use std::cell::Cell;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const COLLAPSED_W: f32 = 14.0;
 const EXPANDED_W: f32 = 384.0;
@@ -601,6 +601,20 @@ struct TransferStatus {
     error: Option<String>,
 }
 
+fn notify_arrival(item: &ReceivedItem) {
+    let kind = match item.kind {
+        ItemKind::File => "File",
+        ItemKind::Image => "Image",
+        ItemKind::Text => "Clipboard text",
+    };
+    let body = format!("{} from {}", item.name, item.from);
+    let _ = notify_rust::Notification::new()
+        .summary(&format!("Shelf received {kind}"))
+        .body(&body)
+        .appname("Shelf")
+        .show();
+}
+
 enum Action {
     SendClipboard,
     StartPairing,
@@ -630,6 +644,7 @@ struct ShelfApp {
     target: Target,
     status: String,
     transfers: Vec<TransferStatus>,
+    audit: Vec<String>,
     my_code: Option<(String, Instant)>,
     pair_dialog: Option<PairDialog>,
 
@@ -644,6 +659,19 @@ struct ShelfApp {
     positioned: bool,
     last_active: Instant,
     open_until: Instant,
+}
+
+fn audit_clock() -> String {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() % 86_400)
+        .unwrap_or(0);
+    format!(
+        "{:02}:{:02}:{:02}",
+        seconds / 3_600,
+        (seconds % 3_600) / 60,
+        seconds % 60
+    )
 }
 
 impl ShelfApp {
@@ -669,6 +697,7 @@ impl ShelfApp {
             target: Target::All,
             status: String::new(),
             transfers: Vec::new(),
+            audit: Vec::new(),
             my_code: None,
             pair_dialog: None,
             auto_copy: true,
@@ -689,6 +718,14 @@ impl ShelfApp {
 
     fn open_for(&mut self, secs: u64) {
         self.open_until = Instant::now() + Duration::from_secs(secs);
+    }
+
+    fn record_audit(&mut self, message: impl Into<String>) {
+        self.audit
+            .push(format!("[{}] {}", audit_clock(), message.into()));
+        if self.audit.len() > 100 {
+            self.audit.remove(0);
+        }
     }
 
     fn update_transfer(
@@ -745,7 +782,10 @@ impl ShelfApp {
     fn drain_events(&mut self) {
         while let Ok(ev) = self.rx.try_recv() {
             match ev {
-                Event::Ready { device_name, .. } => self.device_name = device_name,
+                Event::Ready { device_name, .. } => {
+                    self.record_audit(format!("Shelf started on {device_name}"));
+                    self.device_name = device_name;
+                }
                 Event::Peers { paired, nearby } => {
                     self.paired = paired;
                     self.nearby = nearby;
@@ -770,12 +810,14 @@ impl ShelfApp {
                 Event::PairingCleared => self.my_code = None,
                 Event::PairingResult(res) => match res {
                     Ok(name) => {
+                        self.record_audit(format!("Paired with {name}"));
                         self.pair_dialog = None;
                         self.my_code = None;
                         self.set_status(format!("Paired with {name}"));
                         self.open_for(4);
                     }
                     Err(e) => {
+                        self.record_audit(format!("Pairing failed: {e}"));
                         if let Some(d) = self.pair_dialog.as_mut() {
                             d.busy = false;
                             d.error = Some(e);
@@ -785,6 +827,8 @@ impl ShelfApp {
                     }
                 },
                 Event::Received(item) => {
+                    notify_arrival(&item);
+                    self.record_audit(format!("Received {} from {}", item.name, item.from));
                     if self.auto_copy {
                         clip::copy_item(&item);
                     }
@@ -808,13 +852,23 @@ impl ShelfApp {
                         transfer.error = error.clone();
                     }
                     match error {
-                        None => self.set_status(format!("Sent {item} to {to}")),
-                        Some(e) => self.set_status(format!("Could not send {item} to {to}: {e}")),
+                        None => {
+                            self.record_audit(format!("Sent {item} to {to}"));
+                            self.set_status(format!("Sent {item} to {to}"));
+                        }
+                        Some(e) => {
+                            self.record_audit(format!("Send failed for {item} to {to}: {e}"));
+                            self.set_status(format!("Could not send {item} to {to}: {e}"));
+                        }
                     }
                 }
-                Event::Info(s) => self.set_status(s),
+                Event::Info(s) => {
+                    self.record_audit(s.clone());
+                    self.set_status(s);
+                }
                 Event::Error(s) => {
                     self.fail_latest_transfer(s.clone());
+                    self.record_audit(format!("Failure: {s}"));
                     self.set_status(s);
                 }
             }
@@ -1407,6 +1461,28 @@ impl eframe::App for ShelfApp {
                                             ui.spinner();
                                         }
                                     });
+                                });
+                            }
+                        });
+
+                    egui::CollapsingHeader::new(semibold("Activity", 12.5).color(p.text2))
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            if self.audit.is_empty() {
+                                ui.label(
+                                    RichText::new("No activity yet.")
+                                        .size(12.0)
+                                        .color(p.text2),
+                                );
+                            } else {
+                                card(ui, |ui| {
+                                    for entry in self.audit.iter().rev().take(20) {
+                                        ui.label(
+                                            RichText::new(entry)
+                                                .size(11.5)
+                                                .color(p.text2),
+                                        );
+                                    }
                                 });
                             }
                         });

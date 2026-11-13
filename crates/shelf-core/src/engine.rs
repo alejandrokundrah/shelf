@@ -626,7 +626,8 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
         let c = shared.config.lock().unwrap();
         c.find_peer(&ch.remote_static).cloned()
     };
-    let peer = peer.ok_or_else(|| anyhow!("rejected a connection from an unpaired device"))?;
+    let peer = peer.ok_or_else(|| anyhow!("authentication failed: unpaired device"))?;
+    shared.emit(Event::Info(format!("Connected to {}", peer.name)));
 
     let header: ItemHeader = serde_json::from_slice(&ch.recv().await?)?;
     if header.name.len() > 512 {
