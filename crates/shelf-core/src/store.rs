@@ -23,11 +23,32 @@ pub struct RoomMember {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RoomFile {
+    pub hash: String,
+    pub name: String,
+    pub size: u64,
+    pub uploaded_by: String,
+    pub uploaded_at: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Room {
     pub id: String,
     pub name: String,
     pub owner_public_key: String,
     pub members: Vec<RoomMember>,
+    #[serde(default)]
+    pub files: Vec<RoomFile>,
+}
+
+impl Room {
+    pub fn can_delete(&self, public_key: &str) -> bool {
+        self.owner_public_key == public_key
+    }
+
+    pub fn has_member(&self, public_key: &str) -> bool {
+        self.members.iter().any(|m| m.public_key == public_key)
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -93,5 +114,44 @@ impl Config {
     pub fn find_peer(&self, public_key: &[u8]) -> Option<&PairedPeer> {
         let k = hex::encode(public_key);
         self.peers.iter().find(|p| p.public_key == k)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Room, RoomFile, RoomMember, RoomRole};
+
+    fn room() -> Room {
+        Room {
+            id: "room-1".into(),
+            name: "Science Class".into(),
+            owner_public_key: "teacher".into(),
+            members: vec![RoomMember {
+                name: "Student".into(),
+                public_key: "student".into(),
+                role: RoomRole::Member,
+            }],
+            files: vec![RoomFile {
+                hash: "abc".into(),
+                name: "worksheet.pdf".into(),
+                size: 42,
+                uploaded_by: "student".into(),
+                uploaded_at: 1,
+            }],
+        }
+    }
+
+    #[test]
+    fn only_owner_can_delete_room_files() {
+        let room = room();
+        assert!(room.can_delete("teacher"));
+        assert!(!room.can_delete("student"));
+    }
+
+    #[test]
+    fn membership_is_checked_by_public_key() {
+        let room = room();
+        assert!(room.has_member("student"));
+        assert!(!room.has_member("unknown"));
     }
 }
