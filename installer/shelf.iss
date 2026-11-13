@@ -24,7 +24,7 @@ RestartApplications=no
 
 [Tasks]
 Name: "startup"; Description: "Start Shelf when Windows starts"; GroupDescription: "Options:"
-Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Options:"; Flags: unchecked
+Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Options:"
 
 [Files]
 Source: "..\target\release\shelf.exe"; DestDir: "{app}"; Flags: ignoreversion
