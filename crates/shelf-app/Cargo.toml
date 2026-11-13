@@ -1,0 +1,11 @@
+[package]
+name = "shelf"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+shelf-core = { path = "../shelf-core" }
+eframe = "0.29"
+arboard = "3"
+png = "0.17"
+anyhow = "1"
