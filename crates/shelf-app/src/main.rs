@@ -110,48 +110,47 @@ fn apply_mac_style(ctx: &egui::Context) {
     let r = Rounding::same(6.0);
     v.panel_fill = BG;
     v.window_fill = CARD;
-    v.window_stroke = Stroke::new(1.0, SEP);
+    v.window_stroke = Stroke::new(1.0_f32, SEP);
     v.window_rounding = Rounding::same(10.0);
     v.menu_rounding = Rounding::same(8.0);
     v.extreme_bg_color = Color32::from_rgb(24, 24, 26);
     v.faint_bg_color = CARD;
-    v.weak_text_color = Some(TEXT2);
     v.hyperlink_color = ACCENT;
     v.selection.bg_fill = ACCENT;
-    v.selection.stroke = Stroke::new(1.0, Color32::WHITE);
+    v.selection.stroke = Stroke::new(1.0_f32, Color32::WHITE);
 
     v.widgets.noninteractive.bg_fill = CARD;
     v.widgets.noninteractive.weak_bg_fill = CARD;
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, SEP);
-    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, SEP);
+    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, TEXT);
     v.widgets.noninteractive.rounding = r;
     v.widgets.noninteractive.expansion = 0.0;
 
     v.widgets.inactive.bg_fill = Color32::from_white_alpha(24);
     v.widgets.inactive.weak_bg_fill = Color32::from_white_alpha(24);
     v.widgets.inactive.bg_stroke = Stroke::NONE;
-    v.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT);
+    v.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, TEXT);
     v.widgets.inactive.rounding = r;
     v.widgets.inactive.expansion = 0.0;
 
     v.widgets.hovered.bg_fill = Color32::from_white_alpha(38);
     v.widgets.hovered.weak_bg_fill = Color32::from_white_alpha(38);
     v.widgets.hovered.bg_stroke = Stroke::NONE;
-    v.widgets.hovered.fg_stroke = Stroke::new(1.0, TEXT);
+    v.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, TEXT);
     v.widgets.hovered.rounding = r;
     v.widgets.hovered.expansion = 0.0;
 
     v.widgets.active.bg_fill = Color32::from_white_alpha(56);
     v.widgets.active.weak_bg_fill = Color32::from_white_alpha(56);
     v.widgets.active.bg_stroke = Stroke::NONE;
-    v.widgets.active.fg_stroke = Stroke::new(1.0, TEXT);
+    v.widgets.active.fg_stroke = Stroke::new(1.0_f32, TEXT);
     v.widgets.active.rounding = r;
     v.widgets.active.expansion = 0.0;
 
     v.widgets.open.bg_fill = Color32::from_white_alpha(38);
     v.widgets.open.weak_bg_fill = Color32::from_white_alpha(38);
     v.widgets.open.bg_stroke = Stroke::NONE;
-    v.widgets.open.fg_stroke = Stroke::new(1.0, TEXT);
+    v.widgets.open.fg_stroke = Stroke::new(1.0_f32, TEXT);
     v.widgets.open.rounding = r;
     v.widgets.open.expansion = 0.0;
 
@@ -191,7 +190,7 @@ fn quit_dot(ui: &mut egui::Ui) -> egui::Response {
     let c = rect.center();
     ui.painter().circle_filled(c, 6.5, Color32::from_rgb(255, 95, 87));
     if resp.hovered() {
-        let s = Stroke::new(1.3, Color32::from_rgb(90, 20, 15));
+        let s = Stroke::new(1.3_f32, Color32::from_rgb(90, 20, 15));
         ui.painter().line_segment([c + vec2(-2.5, -2.5), c + vec2(2.5, 2.5)], s);
         ui.painter().line_segment([c + vec2(2.5, -2.5), c + vec2(-2.5, 2.5)], s);
     }
@@ -279,11 +278,11 @@ fn drop_zone(ui: &mut egui::Ui, hovering: bool) {
     let p = ui.painter();
     p.rect_filled(rect, 12.0, fill);
     let path = rounded_rect_path(rect.shrink(0.75), 12.0);
-    p.extend(egui::Shape::dashed_line(&path, Stroke::new(1.5, line), 6.0, 5.0));
+    p.extend(egui::Shape::dashed_line(&path, Stroke::new(1.5_f32, line), 6.0, 5.0));
 
     // Down arrow into a tray.
     let c = rect.center() + vec2(0.0, -20.0);
-    let s = Stroke::new(2.0, if hovering { ACCENT } else { TEXT2 });
+    let s = Stroke::new(2.0_f32, if hovering { ACCENT } else { TEXT2 });
     p.line_segment([c + vec2(0.0, -9.0), c + vec2(0.0, 5.0)], s);
     p.line_segment([c + vec2(-5.0, 0.0), c + vec2(0.0, 5.0)], s);
     p.line_segment([c + vec2(5.0, 0.0), c + vec2(0.0, 5.0)], s);
@@ -313,7 +312,7 @@ fn draw_kind_icon(painter: &egui::Painter, rect: Rect, kind: &ItemKind) {
     };
     painter.rect_filled(rect, 9.0, color);
     let c = rect.center();
-    let s = Stroke::new(1.7, Color32::WHITE);
+    let s = Stroke::new(1.7_f32, Color32::WHITE);
     match kind {
         ItemKind::File => {
             painter.rect_stroke(Rect::from_center_size(c, vec2(12.0, 16.0)), 2.5, s);
@@ -658,7 +657,7 @@ impl eframe::App for ShelfApp {
             egui::Frame::none()
                 .fill(BG)
                 .rounding(Rounding { nw: 12.0, sw: 12.0, ne: 0.0, se: 0.0 })
-                .stroke(Stroke::new(1.0, Color32::from_white_alpha(28)))
+                .stroke(Stroke::new(1.0_f32, Color32::from_white_alpha(28)))
                 .inner_margin(egui::Margin::same(14.0))
         };
 
@@ -716,7 +715,7 @@ impl eframe::App for ShelfApp {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Send to").color(TEXT));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            egui::ComboBox::from_id_source("send_to")
+                            egui::ComboBox::from_id_salt("send_to")
                                 .selected_text(label)
                                 .width(170.0)
                                 .show_ui(ui, |ui| {
