@@ -8,7 +8,7 @@ use eframe::egui::{
 };
 use shelf_core::{
     Command, Event, Handle, ItemKind, NearbyDevice, Payload, PeerStatus, ReceivedItem, Target,
-    TransferDirection,
+    Room, TransferDirection,
 };
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -628,6 +628,7 @@ enum Action {
     Remove(usize),
     ClearAll,
     CancelTransfers,
+    CreateRoom,
 }
 
 struct ShelfApp {
@@ -638,6 +639,7 @@ struct ShelfApp {
     clip_rx: Receiver<Result<Payload, String>>,
 
     device_name: String,
+    device_public_key: String,
     paired: Vec<PeerStatus>,
     nearby: Vec<NearbyDevice>,
     items: Vec<ShelfItem>,
@@ -645,6 +647,8 @@ struct ShelfApp {
     status: String,
     transfers: Vec<TransferStatus>,
     audit: Vec<String>,
+    rooms: Vec<Room>,
+    room_name_input: String,
     my_code: Option<(String, Instant)>,
     pair_dialog: Option<PairDialog>,
 
@@ -691,6 +695,7 @@ impl ShelfApp {
             clip_tx,
             clip_rx,
             device_name: String::new(),
+            device_public_key: String::new(),
             paired: Vec::new(),
             nearby: Vec::new(),
             items: Vec::new(),
@@ -698,6 +703,8 @@ impl ShelfApp {
             status: String::new(),
             transfers: Vec::new(),
             audit: Vec::new(),
+            rooms: Vec::new(),
+            room_name_input: String::new(),
             my_code: None,
             pair_dialog: None,
             auto_copy: true,
@@ -783,12 +790,21 @@ impl ShelfApp {
         while let Ok(ev) = self.rx.try_recv() {
             match ev {
                 Event::RoomUpdated(room) => {
+                    if let Some(existing) = self.rooms.iter_mut().find(|r| r.id == room.id) {
+                        *existing = room.clone();
+                    } else {
+                        self.rooms.push(room.clone());
+                    }
                     self.record_audit(format!("Room updated: {}", room.name));
                     self.set_status(format!("Room ready: {}", room.name));
                 }
-                Event::Ready { device_name, .. } => {
+                Event::Ready {
+                    device_name,
+                    public_key,
+                } => {
                     self.record_audit(format!("Shelf started on {device_name}"));
                     self.device_name = device_name;
+                    self.device_public_key = public_key;
                 }
                 Event::Peers { paired, nearby } => {
                     self.paired = paired;
@@ -1259,6 +1275,71 @@ impl eframe::App for ShelfApp {
                         }
                     });
 
+                    // Collaboration rooms.
+                    egui::CollapsingHeader::new(semibold("Rooms", 12.5).color(p.text2))
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            card(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.room_name_input)
+                                            .hint_text("New class or team room")
+                                            .desired_width(ui.available_width() - 86.0),
+                                    );
+                                    if capsule(
+                                        ui,
+                                        "Create",
+                                        Look::Primary,
+                                        28.0,
+                                        Some(74.0),
+                                        !self.room_name_input.trim().is_empty(),
+                                    )
+                                    .clicked()
+                                    {
+                                        actions.push(Action::CreateRoom);
+                                    }
+                                });
+                                if self.rooms.is_empty() {
+                                    ui.label(
+                                        RichText::new(
+                                            "Create a room to share work with classmates or teammates.",
+                                        )
+                                        .size(12.0)
+                                        .color(p.text2),
+                                    );
+                                } else {
+                                    for room in &self.rooms {
+                                        hairline(ui);
+                                        ui.horizontal(|ui| {
+                                            ui.vertical(|ui| {
+                                                ui.label(
+                                                    RichText::new(&room.name)
+                                                        .size(13.5)
+                                                        .color(p.text),
+                                                );
+                                                let role = if room.owner_public_key
+                                                    == self.device_public_key
+                                                {
+                                                    "Owner"
+                                                } else {
+                                                    "Member"
+                                                };
+                                                ui.label(
+                                                    RichText::new(format!(
+                                                        "{} · {} member(s)",
+                                                        role,
+                                                        room.members.len()
+                                                    ))
+                                                    .size(11.5)
+                                                    .color(p.text2),
+                                                );
+                                            });
+                                        });
+                                    }
+                                }
+                            });
+                        });
+
                     // Devices and pairing.
                     egui::CollapsingHeader::new(semibold("Devices", 12.5).color(p.text2))
                         .default_open(
@@ -1636,6 +1717,13 @@ impl eframe::App for ShelfApp {
                     self.status = "Shelf cleared".to_string();
                 }
                 Action::CancelTransfers => self.handle.send(Command::CancelTransfers),
+                Action::CreateRoom => {
+                    let name = self.room_name_input.trim().to_string();
+                    if !name.is_empty() {
+                        self.handle.send(Command::CreateRoom { name });
+                        self.room_name_input.clear();
+                    }
+                }
             }
         }
         remove.sort_unstable();
