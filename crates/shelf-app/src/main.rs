@@ -746,10 +746,19 @@ impl ShelfApp {
                 Event::Peers { paired, nearby } => {
                     self.paired = paired;
                     self.nearby = nearby;
-                    if let Target::Peer(k) = &self.target {
-                        if !self.paired.iter().any(|p| &p.public_key == k) {
-                            self.target = Target::All;
+                    match &mut self.target {
+                        Target::Peer(k) => {
+                            if !self.paired.iter().any(|p| &p.public_key == k) {
+                                self.target = Target::All;
+                            }
                         }
+                        Target::Peers(keys) => {
+                            keys.retain(|k| self.paired.iter().any(|p| &p.public_key == k));
+                            if keys.is_empty() {
+                                self.target = Target::All;
+                            }
+                        }
+                        Target::All => {}
                     }
                 }
                 Event::PairingCode { code, seconds } => {
@@ -1134,13 +1143,32 @@ impl eframe::App for ShelfApp {
                                 self.target = Target::All;
                             }
                             for dev in &paired {
-                                let selected =
-                                    matches!(&self.target, Target::Peer(k) if k == &dev.public_key);
+                                let selected = match &self.target {
+                                    Target::All => false,
+                                    Target::Peer(k) => k == &dev.public_key,
+                                    Target::Peers(keys) => keys.iter().any(|k| k == &dev.public_key),
+                                };
                                 let look = if selected { Look::Primary } else { Look::Glass };
                                 if capsule(ui, &shorten(&dev.name, 18), look, 28.0, None, true)
                                     .clicked()
                                 {
-                                    self.target = Target::Peer(dev.public_key.clone());
+                                    let mut keys = match &self.target {
+                                        Target::All => Vec::new(),
+                                        Target::Peer(k) => vec![k.clone()],
+                                        Target::Peers(keys) => keys.clone(),
+                                    };
+                                    if let Some(index) =
+                                        keys.iter().position(|k| k == &dev.public_key)
+                                    {
+                                        keys.remove(index);
+                                    } else {
+                                        keys.push(dev.public_key.clone());
+                                    }
+                                    self.target = match keys.len() {
+                                        0 => Target::All,
+                                        1 => Target::Peer(keys.remove(0)),
+                                        _ => Target::Peers(keys),
+                                    };
                                 }
                             }
                         });

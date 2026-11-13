@@ -29,6 +29,7 @@ const PAIR_TTL: Duration = Duration::from_secs(120);
 pub enum Target {
     All,
     Peer(String), // public key (hex)
+    Peers(Vec<String>), // public keys (hex)
 }
 
 #[derive(Clone, Debug)]
@@ -198,6 +199,7 @@ impl Shared {
             .filter(|p| match t {
                 Target::All => true,
                 Target::Peer(k) => &p.public_key == k,
+                Target::Peers(keys) => keys.iter().any(|k| k == &p.public_key),
             })
             .filter_map(|p| {
                 nearby
