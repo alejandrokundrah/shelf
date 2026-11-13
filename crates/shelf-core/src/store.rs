@@ -35,6 +35,8 @@ pub struct RoomFile {
 pub struct Room {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub invite_code: String,
     pub owner_public_key: String,
     pub members: Vec<RoomMember>,
     #[serde(default)]
@@ -108,6 +110,7 @@ impl Config {
         let room = Room {
             id,
             name,
+            invite_code: format!("{:06}", room_code()),
             owner_public_key: self.public_key.clone(),
             members: vec![RoomMember {
                 name: self.device_name.clone(),
@@ -167,6 +170,14 @@ fn uuid_like_id() -> String {
     format!("{now:x}")
 }
 
+fn room_code() -> u32 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    (now % 1_000_000) as u32
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Room, RoomFile, RoomMember, RoomRole};
@@ -175,6 +186,7 @@ mod tests {
         Room {
             id: "room-1".into(),
             name: "Science Class".into(),
+            invite_code: "123456".into(),
             owner_public_key: "teacher".into(),
             members: vec![RoomMember {
                 name: "Student".into(),

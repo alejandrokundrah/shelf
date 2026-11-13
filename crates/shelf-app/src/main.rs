@@ -1333,6 +1333,16 @@ impl eframe::App for ShelfApp {
                                                     .size(11.5)
                                                     .color(p.text2),
                                                 );
+                                                if role == "Owner" {
+                                                    ui.label(
+                                                        RichText::new(format!(
+                                                            "Invite code: {}",
+                                                            room.invite_code
+                                                        ))
+                                                        .size(11.5)
+                                                        .color(p.accent),
+                                                    );
+                                                }
                                             });
                                         });
                                     }
