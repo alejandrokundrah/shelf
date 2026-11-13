@@ -8,6 +8,7 @@ use eframe::egui::{
 };
 use shelf_core::{
     Command, Event, Handle, ItemKind, NearbyDevice, Payload, PeerStatus, ReceivedItem, Target,
+    TransferDirection,
 };
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -589,6 +590,17 @@ struct PairDialog {
     error: Option<String>,
 }
 
+struct TransferStatus {
+    name: String,
+    peer: String,
+    direction: TransferDirection,
+    done: u64,
+    total: u64,
+    started: Instant,
+    finished: bool,
+    error: Option<String>,
+}
+
 enum Action {
     SendClipboard,
     StartPairing,
@@ -616,7 +628,7 @@ struct ShelfApp {
     items: Vec<ShelfItem>,
     target: Target,
     status: String,
-    progress: Option<(String, u8)>,
+    transfers: Vec<TransferStatus>,
     my_code: Option<(String, Instant)>,
     pair_dialog: Option<PairDialog>,
 
@@ -654,7 +666,7 @@ impl ShelfApp {
             items: Vec::new(),
             target: Target::All,
             status: String::new(),
-            progress: None,
+            transfers: Vec::new(),
             my_code: None,
             pair_dialog: None,
             auto_copy: true,
@@ -674,6 +686,57 @@ impl ShelfApp {
 
     fn open_for(&mut self, secs: u64) {
         self.open_until = Instant::now() + Duration::from_secs(secs);
+    }
+
+    fn update_transfer(
+        &mut self,
+        direction: TransferDirection,
+        name: String,
+        peer: String,
+        done: u64,
+        total: u64,
+    ) {
+        let index = self.transfers.iter().position(|t| {
+            t.direction == direction && t.name == name && t.peer == peer && !t.finished
+        });
+        if let Some(index) = index {
+            let transfer = &mut self.transfers[index];
+            transfer.done = done;
+            transfer.total = total;
+        } else {
+            self.transfers.push(TransferStatus {
+                name,
+                peer,
+                direction,
+                done,
+                total,
+                started: Instant::now(),
+                finished: false,
+                error: None,
+            });
+            if self.transfers.len() > 8 {
+                self.transfers.remove(0);
+            }
+        }
+    }
+
+    fn finish_download(&mut self, name: &str, peer: &str) {
+        if let Some(transfer) = self.transfers.iter_mut().rev().find(|t| {
+            t.direction == TransferDirection::Download
+                && t.name == name
+                && t.peer == peer
+                && !t.finished
+        }) {
+            transfer.done = transfer.total;
+            transfer.finished = true;
+        }
+    }
+
+    fn fail_latest_transfer(&mut self, error: String) {
+        if let Some(transfer) = self.transfers.iter_mut().rev().find(|t| !t.finished) {
+            transfer.finished = true;
+            transfer.error = Some(error);
+        }
     }
 
     fn drain_events(&mut self) {
@@ -714,22 +777,34 @@ impl ShelfApp {
                         clip::copy_item(&item);
                     }
                     self.set_status(format!("Received {} from {}", item.name, item.from));
-                    self.progress = None;
+                    self.finish_download(&item.name, &item.from);
                     self.items.insert(0, ShelfItem { item, received: Instant::now() });
                     self.open_for(4);
                 }
-                Event::Progress { name, to, percent } => {
-                    self.progress = Some((format!("{name} to {to}"), percent));
+                Event::Progress { direction, name, peer, done, total } => {
+                    self.update_transfer(direction, name, peer, done, total);
                 }
                 Event::SendDone { to, item, error } => {
-                    self.progress = None;
+                    if let Some(transfer) = self.transfers.iter_mut().rev().find(|t| {
+                        t.direction == TransferDirection::Upload
+                            && t.name == item
+                            && t.peer == to
+                            && !t.finished
+                    }) {
+                        transfer.done = transfer.total;
+                        transfer.finished = true;
+                        transfer.error = error.clone();
+                    }
                     match error {
                         None => self.set_status(format!("Sent {item} to {to}")),
                         Some(e) => self.set_status(format!("Could not send {item} to {to}: {e}")),
                     }
                 }
                 Event::Info(s) => self.set_status(s),
-                Event::Error(s) => self.set_status(s),
+                Event::Error(s) => {
+                    self.fail_latest_transfer(s.clone());
+                    self.set_status(s);
+                }
             }
         }
         while let Ok(res) = self.clip_rx.try_recv() {
@@ -813,6 +888,19 @@ fn human_size(n: u64) -> String {
         u += 1;
     }
     if u == 0 { format!("{n} B") } else { format!("{v:.1} {}", UNITS[u]) }
+}
+
+fn transfer_rate(bytes_per_second: f64) -> String {
+    format!("{}/s", human_size(bytes_per_second.max(0.0) as u64))
+}
+
+fn transfer_eta(seconds: f64) -> String {
+    let seconds = seconds.max(0.0).ceil() as u64;
+    if seconds < 60 {
+        format!("{seconds}s left")
+    } else {
+        format!("{}m {:02}s left", seconds / 60, seconds % 60)
+    }
 }
 
 fn shorten(s: &str, max: usize) -> String {
@@ -961,13 +1049,63 @@ impl eframe::App for ShelfApp {
                     if !self.status.is_empty() {
                         status_pill(ui, &self.status);
                     }
-                    if let Some((label, pct)) = &self.progress {
-                        ui.label(
-                            RichText::new(format!("{} ({}%)", shorten(label, 34), pct))
-                                .size(11.5)
-                                .color(p.text2),
-                        );
-                        thin_progress(ui, *pct as f32 / 100.0);
+                    for transfer in self
+                        .transfers
+                        .iter()
+                        .rev()
+                        .filter(|t| !t.finished || t.error.is_some())
+                        .take(3)
+                    {
+                        let elapsed = transfer.started.elapsed().as_secs_f64().max(0.001);
+                        let speed = transfer.done as f64 / elapsed;
+                        let remaining = transfer.total.saturating_sub(transfer.done) as f64;
+                        let fraction = if transfer.total == 0 {
+                            1.0
+                        } else {
+                            transfer.done as f32 / transfer.total as f32
+                        };
+                        let verb = match transfer.direction {
+                            TransferDirection::Upload => "Uploading",
+                            TransferDirection::Download => "Downloading",
+                        };
+                        card(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{verb} {} · {}",
+                                        shorten(&transfer.name, 24),
+                                        shorten(&transfer.peer, 18)
+                                    ))
+                                    .size(11.5)
+                                    .color(p.text),
+                                );
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    ui.label(
+                                        RichText::new(format!("{}%", (fraction * 100.0) as u8))
+                                            .size(11.5)
+                                            .color(p.text2),
+                                    );
+                                });
+                            });
+                            if let Some(error) = &transfer.error {
+                                ui.label(
+                                    RichText::new(format!("Failed: {}", shorten(error, 52)))
+                                        .size(11.5)
+                                        .color(p.red),
+                                );
+                            } else {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{} · {}",
+                                        transfer_rate(speed),
+                                        transfer_eta(remaining / speed)
+                                    ))
+                                    .size(11.5)
+                                    .color(p.text2),
+                                );
+                            }
+                            thin_progress(ui, fraction);
+                        });
                     }
 
                     // Drop zone and clipboard.

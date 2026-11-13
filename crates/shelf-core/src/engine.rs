@@ -73,6 +73,12 @@ pub struct ReceivedItem {
     pub text: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransferDirection {
+    Upload,
+    Download,
+}
+
 pub enum Event {
     Ready { device_name: String, public_key: String },
     Peers { paired: Vec<PeerStatus>, nearby: Vec<NearbyDevice> },
@@ -80,7 +86,13 @@ pub enum Event {
     PairingCleared,
     PairingResult(Result<String, String>),
     Received(ReceivedItem),
-    Progress { name: String, to: String, percent: u8 },
+    Progress {
+        direction: TransferDirection,
+        name: String,
+        peer: String,
+        done: u64,
+        total: u64,
+    },
     SendDone { to: String, item: String, error: Option<String> },
     Info(String),
     Error(String),
@@ -502,9 +514,44 @@ fn unique_inbox_path(inbox: &Path, name: &str) -> PathBuf {
     }
 }
 
-async fn receive_to_file(ch: &mut SecureChannel, path: &Path, size: u64) -> Result<()> {
+fn emit_progress(
+    shared: &Arc<Shared>,
+    direction: TransferDirection,
+    name: &str,
+    peer: &str,
+    done: u64,
+    total: u64,
+    last_percent: &mut u8,
+) {
+    let percent = if total == 0 {
+        100
+    } else {
+        ((done * 100) / total) as u8
+    };
+    if percent != *last_percent && (percent.saturating_sub(*last_percent) >= 5 || percent == 100) {
+        *last_percent = percent;
+        shared.emit(Event::Progress {
+            direction,
+            name: name.to_string(),
+            peer: peer.to_string(),
+            done,
+            total,
+        });
+    }
+}
+
+async fn receive_to_file(
+    shared: &Arc<Shared>,
+    peer: &str,
+    name: &str,
+    ch: &mut SecureChannel,
+    path: &Path,
+    size: u64,
+) -> Result<()> {
     let mut f = tokio::fs::File::create(path).await?;
     let mut left = size;
+    let mut done = 0;
+    let mut last_percent = 0;
     while left > 0 {
         let chunk = ch.recv().await?;
         if chunk.is_empty() || chunk.len() as u64 > left {
@@ -512,7 +559,26 @@ async fn receive_to_file(ch: &mut SecureChannel, path: &Path, size: u64) -> Resu
         }
         f.write_all(&chunk).await?;
         left -= chunk.len() as u64;
+        done += chunk.len() as u64;
+        emit_progress(
+            shared,
+            TransferDirection::Download,
+            name,
+            peer,
+            done,
+            size,
+            &mut last_percent,
+        );
     }
+    emit_progress(
+        shared,
+        TransferDirection::Download,
+        name,
+        peer,
+        size,
+        size,
+        &mut last_percent,
+    );
     f.flush().await?;
     Ok(())
 }
@@ -539,21 +605,44 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
     let (path, text) = if header.kind == ItemKind::Text {
         let mut buf = Vec::with_capacity(header.size as usize);
         let mut left = header.size;
+        let mut done = 0;
+        let mut last_percent = 0;
         while left > 0 {
             let chunk = ch.recv().await?;
             if chunk.is_empty() || chunk.len() as u64 > left {
                 bail!("corrupt transfer");
             }
             left -= chunk.len() as u64;
+            done += chunk.len() as u64;
             buf.extend_from_slice(&chunk);
+            emit_progress(
+                shared,
+                TransferDirection::Download,
+                &header.name,
+                &peer.name,
+                done,
+                header.size,
+                &mut last_percent,
+            );
         }
+        emit_progress(
+            shared,
+            TransferDirection::Download,
+            &header.name,
+            &peer.name,
+            header.size,
+            header.size,
+            &mut last_percent,
+        );
         let text = String::from_utf8(buf).map_err(|_| anyhow!("text was not valid UTF-8"))?;
         (None, Some(text))
     } else {
         let inbox = inbox_dir();
         tokio::fs::create_dir_all(&inbox).await?;
         let path = unique_inbox_path(&inbox, &header.name);
-        if let Err(e) = receive_to_file(&mut ch, &path, header.size).await {
+        if let Err(e) =
+            receive_to_file(shared, &peer.name, &header.name, &mut ch, &path, header.size).await
+        {
             let _ = tokio::fs::remove_file(&path).await;
             return Err(e);
         }
@@ -594,7 +683,7 @@ async fn push_item<R: AsyncRead + Unpin>(
 
     let mut buf = vec![0u8; CHUNK];
     let mut left = header.size;
-    let mut last_pct = 0u8;
+    let mut last_percent = 0u8;
     while left > 0 {
         let want = std::cmp::min(left, CHUNK as u64) as usize;
         let n = reader.read(&mut buf[..want]).await?;
@@ -604,15 +693,15 @@ async fn push_item<R: AsyncRead + Unpin>(
         ch.send(&buf[..n]).await?;
         left -= n as u64;
 
-        let pct = (((header.size - left) * 100) / header.size) as u8;
-        if pct != last_pct && (pct - last_pct >= 5 || pct == 100) {
-            last_pct = pct;
-            shared.emit(Event::Progress {
-                name: label.to_string(),
-                to: dest.name.clone(),
-                percent: pct,
-            });
-        }
+        emit_progress(
+            shared,
+            TransferDirection::Upload,
+            label,
+            &dest.name,
+            header.size - left,
+            header.size,
+            &mut last_percent,
+        );
     }
 
     let ack = ch.recv().await?;
