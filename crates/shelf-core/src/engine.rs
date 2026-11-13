@@ -53,6 +53,11 @@ pub enum Command {
     UploadRoomFile { room_id: String, path: PathBuf },
     DeleteRoomFile { room_id: String, hash: String },
     RequestRoomFile { room_id: String, name: String },
+    SubmitRoomFile {
+        room_id: String,
+        path: PathBuf,
+        assignment: String,
+    },
     StartPairing,
     CancelPairing,
     PairWith { addr: SocketAddr, code: String },
@@ -438,7 +443,7 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                     shared.emit(Event::Error("No room members are nearby".into()));
                 } else {
                     let s = shared.clone();
-                    tokio::spawn(send_room_file(s, targets, room_id, path));
+                    tokio::spawn(send_room_file(s, targets, room_id, path, None));
                 }
             }
             Command::DeleteRoomFile { room_id, hash } => {
@@ -494,6 +499,25 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                 } else {
                     let s = shared.clone();
                     tokio::spawn(send_room_request(s, targets, room_id, name));
+                }
+            }
+            Command::SubmitRoomFile {
+                room_id,
+                path,
+                assignment,
+            } => {
+                let targets = room_targets(&shared, &room_id);
+                if targets.is_empty() {
+                    shared.emit(Event::Error("No room members are nearby".into()));
+                } else {
+                    let s = shared.clone();
+                    tokio::spawn(send_room_file(
+                        s,
+                        targets,
+                        room_id,
+                        path,
+                        Some(assignment),
+                    ));
                 }
             }
             Command::StartPairing => {
@@ -732,6 +756,7 @@ async fn handle_room_connection(shared: &Arc<Shared>, stream: TcpStream) -> Resu
                     size: file.size,
                     uploaded_by: file.uploaded_by.clone(),
                     uploaded_at: file.uploaded_at,
+                    submission: file.submission.clone(),
                 })
                 .collect(),
         }
@@ -873,6 +898,7 @@ async fn join_room(
                 size: file.size,
                 uploaded_by: file.uploaded_by,
                 uploaded_at: file.uploaded_at,
+                submission: file.submission,
             })
             .collect(),
     };
@@ -1117,6 +1143,7 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs())
                     .unwrap_or_default(),
+                submission: header.submission.clone(),
             });
             config.save()?;
         }
@@ -1223,6 +1250,7 @@ async fn send_file(
     path: &Path,
     label: &str,
     room_id: Option<&str>,
+    submission: Option<&str>,
 ) -> Result<()> {
     let meta = tokio::fs::metadata(path).await?;
     if meta.is_dir() {
@@ -1248,6 +1276,7 @@ async fn send_file(
         size: meta.len(),
         hash,
         room_id: room_id.map(str::to_owned),
+        submission: submission.map(str::to_owned),
     };
     let mut last_error = None;
     for attempt in 0..3 {
@@ -1278,7 +1307,7 @@ async fn send_payload(shared: Arc<Shared>, targets: Vec<Dest>, payload: Payload)
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_else(|| "file".to_string());
-                    let res = send_file(&shared, &dest, path, &label, None).await;
+                    let res = send_file(&shared, &dest, path, &label, None, None).await;
                     shared.finish_send(&dest.name, label, res);
                 }
             }
@@ -1293,6 +1322,7 @@ async fn send_payload(shared: Arc<Shared>, targets: Vec<Dest>, payload: Payload)
                         size: bytes.len() as u64,
                         hash: Sha256::digest(bytes).into(),
                         room_id: None,
+                        submission: None,
                     };
                     push_item(&shared, &dest, header, bytes, "Text").await
                 };
@@ -1310,6 +1340,7 @@ async fn send_payload(shared: Arc<Shared>, targets: Vec<Dest>, payload: Payload)
                     size: png.len() as u64,
                     hash: Sha256::digest(png).into(),
                     room_id: None,
+                    submission: None,
                 };
                 let res = push_item(&shared, &dest, header, &png[..], &label).await;
                 shared.finish_send(&dest.name, label, res);
@@ -1318,13 +1349,41 @@ async fn send_payload(shared: Arc<Shared>, targets: Vec<Dest>, payload: Payload)
     }
 }
 
-async fn send_room_file(shared: Arc<Shared>, targets: Vec<Dest>, room_id: String, path: PathBuf) {
+fn room_targets(shared: &Arc<Shared>, room_id: &str) -> Vec<Dest> {
+    let config = shared.config.lock().unwrap();
+    let Some(room) = config.rooms.iter().find(|room| room.id == room_id) else {
+        return Vec::new();
+    };
+    let keys = room
+        .members
+        .iter()
+        .filter(|member| member.public_key != config.public_key)
+        .map(|member| member.public_key.clone())
+        .collect();
+    shared.targets(&Target::Peers(keys))
+}
+
+async fn send_room_file(
+    shared: Arc<Shared>,
+    targets: Vec<Dest>,
+    room_id: String,
+    path: PathBuf,
+    submission: Option<String>,
+) {
     let label = path
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| "file".to_string());
     for dest in targets {
-        let result = send_file(&shared, &dest, &path, &label, Some(&room_id)).await;
+        let result = send_file(
+            &shared,
+            &dest,
+            &path,
+            &label,
+            Some(&room_id),
+            submission.as_deref(),
+        )
+        .await;
         shared.finish_send(&dest.name, label.clone(), result);
     }
 }

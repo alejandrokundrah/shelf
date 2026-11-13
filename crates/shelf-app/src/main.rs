@@ -633,6 +633,7 @@ enum Action {
     JoinRoom(SocketAddr),
     DeleteRoomFile { room_id: String, hash: String },
     RequestRoomFile { room_id: String },
+    SubmitRoomFile { room_id: String },
 }
 
 struct ShelfApp {
@@ -657,6 +658,7 @@ struct ShelfApp {
     room_id_input: String,
     room_code_input: String,
     room_request_input: String,
+    room_assignment_input: String,
     my_code: Option<(String, Instant)>,
     pair_dialog: Option<PairDialog>,
 
@@ -717,6 +719,7 @@ impl ShelfApp {
             room_id_input: String::new(),
             room_code_input: String::new(),
             room_request_input: String::new(),
+            room_assignment_input: String::new(),
             my_code: None,
             pair_dialog: None,
             auto_copy: true,
@@ -1042,12 +1045,24 @@ impl eframe::App for ShelfApp {
         });
         if !dropped.is_empty() {
             if let Some(room_id) = self.active_room_id.clone() {
-                self.set_status(format!("Uploading {} file(s) to room...", dropped.len()));
-                for path in dropped {
-                    self.handle.send(Command::UploadRoomFile {
-                        room_id: room_id.clone(),
-                        path,
-                    });
+                let assignment = self.room_assignment_input.trim().to_string();
+                if assignment.is_empty() {
+                    self.set_status(format!("Uploading {} file(s) to room...", dropped.len()));
+                    for path in dropped {
+                        self.handle.send(Command::UploadRoomFile {
+                            room_id: room_id.clone(),
+                            path,
+                        });
+                    }
+                } else {
+                    self.set_status(format!("Submitting {} file(s)...", dropped.len()));
+                    for path in dropped {
+                        self.handle.send(Command::SubmitRoomFile {
+                            room_id: room_id.clone(),
+                            path,
+                            assignment: assignment.clone(),
+                        });
+                    }
                 }
             } else {
                 self.set_status(format!("Sending {} file(s)...", dropped.len()));
@@ -1328,6 +1343,30 @@ impl eframe::App for ShelfApp {
                                     .clicked()
                                     {
                                         actions.push(Action::CreateRoom);
+                                    }
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::TextEdit::singleline(
+                                            &mut self.room_assignment_input,
+                                        )
+                                        .hint_text("Assignment name for dropped files")
+                                        .desired_width(ui.available_width() - 86.0),
+                                    );
+                                    if capsule(
+                                        ui,
+                                        "Submit",
+                                        Look::Primary,
+                                        28.0,
+                                        Some(74.0),
+                                        self.active_room_id.is_some()
+                                            && !self.room_assignment_input.trim().is_empty(),
+                                    )
+                                    .clicked()
+                                    {
+                                        if let Some(room_id) = self.active_room_id.clone() {
+                                            actions.push(Action::SubmitRoomFile { room_id });
+                                        }
                                     }
                                 });
                                 ui.horizontal(|ui| {
@@ -1885,6 +1924,13 @@ impl eframe::App for ShelfApp {
                         self.room_request_input.clear();
                         self.set_status("File request sent");
                     }
+                }
+                Action::SubmitRoomFile { room_id } => {
+                    self.set_status(format!(
+                        "Drop files to submit for {}",
+                        self.room_assignment_input.trim()
+                    ));
+                    self.active_room_id = Some(room_id);
                 }
             }
         }

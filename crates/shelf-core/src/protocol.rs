@@ -20,6 +20,8 @@ pub struct ItemHeader {
     pub hash: [u8; 32],
     #[serde(default)]
     pub room_id: Option<String>,
+    #[serde(default)]
+    pub submission: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -29,6 +31,8 @@ pub struct RoomFileRecord {
     pub size: u64,
     pub uploaded_by: String,
     pub uploaded_at: u64,
+    #[serde(default)]
+    pub submission: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -95,6 +99,7 @@ mod tests {
                 size: 12,
                 uploaded_by: "student".into(),
                 uploaded_at: 42,
+                submission: None,
             }],
         };
         let encoded = serde_json::to_vec(&message).unwrap();

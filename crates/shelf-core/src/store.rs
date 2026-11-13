@@ -29,6 +29,8 @@ pub struct RoomFile {
     pub size: u64,
     pub uploaded_by: String,
     pub uploaded_at: u64,
+    #[serde(default)]
+    pub submission: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -203,6 +205,7 @@ mod tests {
                 size: 42,
                 uploaded_by: "student".into(),
                 uploaded_at: 1,
+                submission: None,
             }],
         }
     }
@@ -240,6 +243,7 @@ mod tests {
             size: 8,
             uploaded_by: "student".into(),
             uploaded_at: 2,
+            submission: None,
         }));
         assert!(!room.delete_file("student", "def"));
         assert!(room.delete_file("teacher", "def"));
