@@ -600,6 +600,7 @@ enum Action {
     Copy(usize),
     Reveal(usize),
     Remove(usize),
+    ClearAll,
 }
 
 struct ShelfApp {
@@ -1225,7 +1226,24 @@ impl eframe::App for ShelfApp {
                         });
 
                     // The shelf itself.
-                    section_label(ui, "On the shelf");
+                    ui.horizontal(|ui| {
+                        section_label(ui, "On the shelf");
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if !self.items.is_empty()
+                                && capsule(
+                                    ui,
+                                    "Clear all",
+                                    Look::Tint(p.red),
+                                    26.0,
+                                    None,
+                                    true,
+                                )
+                                .clicked()
+                            {
+                                actions.push(Action::ClearAll);
+                            }
+                        });
+                    });
                     if self.items.is_empty() {
                         card(ui, |ui| {
                             ui.vertical_centered(|ui| {
@@ -1347,6 +1365,10 @@ impl eframe::App for ShelfApp {
                     }
                 }
                 Action::Remove(i) => remove.push(i),
+                Action::ClearAll => {
+                    remove.extend(0..self.items.len());
+                    self.status = "Shelf cleared".to_string();
+                }
             }
         }
         remove.sort_unstable();
