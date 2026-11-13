@@ -11,6 +11,7 @@ use shelf_core::{
     Room, TransferDirection,
 };
 use std::cell::Cell;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -629,6 +630,7 @@ enum Action {
     ClearAll,
     CancelTransfers,
     CreateRoom,
+    JoinRoom(SocketAddr),
 }
 
 struct ShelfApp {
@@ -649,6 +651,8 @@ struct ShelfApp {
     audit: Vec<String>,
     rooms: Vec<Room>,
     room_name_input: String,
+    room_id_input: String,
+    room_code_input: String,
     my_code: Option<(String, Instant)>,
     pair_dialog: Option<PairDialog>,
 
@@ -705,6 +709,8 @@ impl ShelfApp {
             audit: Vec::new(),
             rooms: Vec::new(),
             room_name_input: String::new(),
+            room_id_input: String::new(),
+            room_code_input: String::new(),
             my_code: None,
             pair_dialog: None,
             auto_copy: true,
@@ -1299,6 +1305,35 @@ impl eframe::App for ShelfApp {
                                         actions.push(Action::CreateRoom);
                                     }
                                 });
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.room_id_input)
+                                            .hint_text("Room ID")
+                                            .desired_width(ui.available_width() * 0.48),
+                                    );
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.room_code_input)
+                                            .hint_text("Invite code")
+                                            .desired_width(ui.available_width() * 0.48),
+                                    );
+                                });
+                                for device in &paired {
+                                    if let Some(addr) = device.addr {
+                                        if capsule(
+                                            ui,
+                                            &format!("Join on {}", shorten(&device.name, 24)),
+                                            Look::Glass,
+                                            28.0,
+                                            Some(ui.available_width()),
+                                            !self.room_id_input.trim().is_empty()
+                                                && !self.room_code_input.trim().is_empty(),
+                                        )
+                                        .clicked()
+                                        {
+                                            actions.push(Action::JoinRoom(addr));
+                                        }
+                                    }
+                                }
                                 if self.rooms.is_empty() {
                                     ui.label(
                                         RichText::new(
@@ -1732,6 +1767,18 @@ impl eframe::App for ShelfApp {
                     if !name.is_empty() {
                         self.handle.send(Command::CreateRoom { name });
                         self.room_name_input.clear();
+                    }
+                }
+                Action::JoinRoom(addr) => {
+                    let room_id = self.room_id_input.trim().to_string();
+                    let invite_code = self.room_code_input.trim().to_string();
+                    if !room_id.is_empty() && !invite_code.is_empty() {
+                        self.handle.send(Command::JoinRoom {
+                            addr,
+                            room_id,
+                            invite_code,
+                        });
+                        self.set_status("Joining room...");
                     }
                 }
             }
