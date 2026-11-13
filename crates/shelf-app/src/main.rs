@@ -632,6 +632,7 @@ enum Action {
     CreateRoom,
     JoinRoom(SocketAddr),
     DeleteRoomFile { room_id: String, hash: String },
+    RequestRoomFile { room_id: String },
 }
 
 struct ShelfApp {
@@ -655,6 +656,7 @@ struct ShelfApp {
     active_room_id: Option<String>,
     room_id_input: String,
     room_code_input: String,
+    room_request_input: String,
     my_code: Option<(String, Instant)>,
     pair_dialog: Option<PairDialog>,
 
@@ -714,6 +716,7 @@ impl ShelfApp {
             active_room_id: None,
             room_id_input: String::new(),
             room_code_input: String::new(),
+            room_request_input: String::new(),
             my_code: None,
             pair_dialog: None,
             auto_copy: true,
@@ -806,6 +809,14 @@ impl ShelfApp {
                     }
                     self.record_audit(format!("Room updated: {}", room.name));
                     self.set_status(format!("Room ready: {}", room.name));
+                }
+                Event::RoomRequest {
+                    room_id,
+                    name,
+                    from,
+                } => {
+                    self.record_audit(format!("File request in {room_id}: {name} from {from}"));
+                    self.set_status(format!("{from} requested {name}"));
                 }
                 Event::Ready {
                     device_name,
@@ -1317,6 +1328,30 @@ impl eframe::App for ShelfApp {
                                     .clicked()
                                     {
                                         actions.push(Action::CreateRoom);
+                                    }
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.room_request_input)
+                                            .hint_text("Request a file from the room")
+                                            .desired_width(ui.available_width() - 86.0),
+                                    );
+                                    if capsule(
+                                        ui,
+                                        "Request",
+                                        Look::Glass,
+                                        28.0,
+                                        Some(74.0),
+                                        !self.room_request_input.trim().is_empty()
+                                            && !rooms.is_empty(),
+                                    )
+                                    .clicked()
+                                    {
+                                        if let Some(room) = rooms.first() {
+                                            actions.push(Action::RequestRoomFile {
+                                                room_id: room.id.clone(),
+                                            });
+                                        }
                                     }
                                 });
                                 ui.horizontal(|ui| {
@@ -1841,6 +1876,15 @@ impl eframe::App for ShelfApp {
                 }
                 Action::DeleteRoomFile { room_id, hash } => {
                     self.handle.send(Command::DeleteRoomFile { room_id, hash });
+                }
+                Action::RequestRoomFile { room_id } => {
+                    let name = self.room_request_input.trim().to_string();
+                    if !name.is_empty() {
+                        self.handle
+                            .send(Command::RequestRoomFile { room_id, name });
+                        self.room_request_input.clear();
+                        self.set_status("File request sent");
+                    }
                 }
             }
         }

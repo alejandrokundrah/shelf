@@ -52,6 +52,7 @@ pub enum Command {
     },
     UploadRoomFile { room_id: String, path: PathBuf },
     DeleteRoomFile { room_id: String, hash: String },
+    RequestRoomFile { room_id: String, name: String },
     StartPairing,
     CancelPairing,
     PairWith { addr: SocketAddr, code: String },
@@ -96,6 +97,11 @@ pub enum TransferDirection {
 
 pub enum Event {
     RoomUpdated(Room),
+    RoomRequest {
+        room_id: String,
+        name: String,
+        from: String,
+    },
     Ready { device_name: String, public_key: String },
     Peers { paired: Vec<PeerStatus>, nearby: Vec<NearbyDevice> },
     PairingCode { code: String, seconds: u64 },
@@ -473,6 +479,23 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                     shared.emit(Event::Error("Only the room owner can delete files".into()));
                 }
             }
+            Command::RequestRoomFile { room_id, name } => {
+                let target = {
+                    let config = shared.config.lock().unwrap();
+                    config
+                        .rooms
+                        .iter()
+                        .find(|room| room.id == room_id)
+                        .map(|room| Target::Peer(room.owner_public_key.clone()))
+                };
+                let targets = target.map(|target| shared.targets(&target)).unwrap_or_default();
+                if targets.is_empty() {
+                    shared.emit(Event::Error("Room owner is not nearby".into()));
+                } else {
+                    let s = shared.clone();
+                    tokio::spawn(send_room_request(s, targets, room_id, name));
+                }
+            }
             Command::StartPairing => {
                 let code = format!("{:06}", rand::thread_rng().gen_range(0..1_000_000u32));
                 let id = shared.next_id.fetch_add(1, Ordering::SeqCst);
@@ -635,6 +658,27 @@ async fn handle_room_connection(shared: &Arc<Shared>, stream: TcpStream) -> Resu
         ch.send(b"OK").await?;
         return Ok(());
     }
+    if let RoomMessage::Request { room_id, name } = message {
+        let known_member = {
+            let config = shared.config.lock().unwrap();
+            config
+                .rooms
+                .iter()
+                .find(|room| room.id == room_id)
+                .map(|room| room.has_member(&hex::encode(&ch.remote_static)))
+                .unwrap_or(false)
+        };
+        if !known_member {
+            bail!("room request rejected from a non-member");
+        }
+        ch.send(b"OK").await?;
+        shared.emit(Event::RoomRequest {
+            room_id,
+            name,
+            from: peer.name,
+        });
+        return Ok(());
+    }
     let RoomMessage::Join {
         room_id,
         invite_code,
@@ -727,6 +771,42 @@ async fn broadcast_room_delete(
         if let Err(error) = result {
             shared.emit(Event::Error(format!(
                 "room deletion failed for {}: {error}",
+                dest.name
+            )));
+        }
+    }
+}
+
+async fn send_room_request(
+    shared: Arc<Shared>,
+    targets: Vec<Dest>,
+    room_id: String,
+    name: String,
+) {
+    for dest in targets {
+        let result = async {
+            let key = shared.private_key()?;
+            let mut stream =
+                timeout(Duration::from_secs(5), TcpStream::connect(dest.addr)).await??;
+            stream.write_u8(b'R').await?;
+            let mut ch =
+                timeout(Duration::from_secs(10), SecureChannel::initiate(stream, &key)).await??;
+            ch.send(
+                &serde_json::to_vec(&RoomMessage::Request {
+                    room_id: room_id.clone(),
+                    name: name.clone(),
+                })?,
+            )
+            .await?;
+            if ch.recv().await? != b"OK" {
+                bail!("room owner rejected request");
+            }
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+        if let Err(error) = result {
+            shared.emit(Event::Error(format!(
+                "file request failed for {}: {error}",
                 dest.name
             )));
         }
