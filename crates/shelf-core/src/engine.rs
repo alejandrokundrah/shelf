@@ -709,8 +709,8 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
         (Some(path), None)
     };
 
-    shared.received_hashes.lock().unwrap().insert(header.hash);
     ch.send(b"OK").await?;
+    shared.received_hashes.lock().unwrap().insert(header.hash);
     shared.emit(Event::Received(ReceivedItem {
         id: rand::random::<u64>(),
         kind: header.kind,
