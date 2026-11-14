@@ -73,6 +73,8 @@ pub enum Command {
         room_id: String,
         hash: String,
     },
+    /// A non-owner removes a room from this device and tells the owner.
+    LeaveRoom { room_id: String },
     DeleteRoom {
         room_id: String,
     },
@@ -521,7 +523,7 @@ fn apply_room_update(
         bail!("room update rejected from a non-member");
     }
     let Some(activity) = room.apply_team_update(requester, update, now) else {
-        bail!("room update is not allowed for this member");
+        bail!("{}", room.denial_reason(requester, update));
     };
     let snapshot = room.clone();
     config.save()?;
@@ -785,6 +787,33 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                     }
                 } else {
                     shared.emit(Event::Error("Only the room owner can delete files".into()));
+                }
+            }
+            Command::LeaveRoom { room_id } => {
+                let owner_key = {
+                    let config = shared.config.lock().unwrap();
+                    config
+                        .rooms
+                        .iter()
+                        .find(|room| room.id == room_id)
+                        .map(|room| (room.owner_public_key.clone(), room.owner_public_key == config.public_key))
+                };
+                match owner_key {
+                    None => shared.emit(Event::Error("Room not found".into())),
+                    Some((_, true)) => shared.emit(Event::Error(
+                        "You own this room. Delete it instead of leaving".into(),
+                    )),
+                    Some((owner, false)) => {
+                        let targets = shared.targets(&Target::Peer(owner));
+                        {
+                            let mut config = shared.config.lock().unwrap();
+                            config.rooms.retain(|room| room.id != room_id);
+                            config.save().ok();
+                        }
+                        let _ = std::fs::remove_dir_all(crate::store::room_dir(&room_id));
+                        tokio::spawn(send_room_leave(shared.clone(), targets, room_id.clone()));
+                        shared.emit(Event::RoomRemoved(room_id));
+                    }
                 }
             }
             Command::DeleteRoom { room_id } => {
@@ -1132,6 +1161,31 @@ async fn handle_room_connection(shared: &Arc<Shared>, stream: TcpStream) -> Resu
         }
         return Ok(());
     }
+    if let RoomMessage::Leave { room_id } = message {
+        let remote_key = hex::encode(&ch.remote_static);
+        let snapshot = {
+            let mut config = shared.config.lock().unwrap();
+            let local_key = config.public_key.clone();
+            let room = config
+                .rooms
+                .iter_mut()
+                .find(|room| room.id == room_id && room.owner_public_key == local_key)
+                .ok_or_else(|| anyhow!("room not found"))?;
+            if remote_key == room.owner_public_key || !room.has_member(&remote_key) {
+                bail!("room leave rejected");
+            }
+            room.members.retain(|member| member.public_key != remote_key);
+            let snapshot = room.clone();
+            config.save()?;
+            snapshot
+        };
+        ch.send(b"OK").await?;
+        let targets = room_targets_except(shared, &room_id, &remote_key);
+        tokio::spawn(broadcast_room_sync(shared.clone(), targets, snapshot.clone()));
+        shared.emit(Event::Info(format!("{} left {}", peer.name, snapshot.name)));
+        shared.emit(Event::RoomUpdated(snapshot));
+        return Ok(());
+    }
     if let RoomMessage::DeleteRoom { room_id } = message {
         let removed = {
             let mut config = shared.config.lock().unwrap();
@@ -1369,6 +1423,37 @@ async fn broadcast_room_room_delete(shared: Arc<Shared>, targets: Vec<Dest>, roo
         if let Err(error) = result {
             shared.emit(Event::Error(format!(
                 "room deletion failed for {}: {error}",
+                dest.name
+            )));
+        }
+    }
+}
+
+async fn send_room_leave(shared: Arc<Shared>, targets: Vec<Dest>, room_id: String) {
+    for dest in targets {
+        let result = async {
+            let key = shared.private_key()?;
+            let mut stream =
+                timeout(Duration::from_secs(5), TcpStream::connect(dest.addr)).await??;
+            stream.write_u8(b'R').await?;
+            let mut ch = timeout(
+                Duration::from_secs(10),
+                SecureChannel::initiate(stream, &key),
+            )
+            .await??;
+            ch.send(&serde_json::to_vec(&RoomMessage::Leave {
+                room_id: room_id.clone(),
+            })?)
+            .await?;
+            if ch.recv().await? != b"OK" {
+                bail!("owner did not confirm that you left");
+            }
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+        if let Err(error) = result {
+            shared.emit(Event::Error(format!(
+                "could not tell {} you left the room: {error}",
                 dest.name
             )));
         }
