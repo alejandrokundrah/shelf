@@ -913,6 +913,8 @@ enum Action {
     ChooseReceiveFolder,
     SaveDeviceGroup,
     UseDeviceGroup(DeviceGroup),
+    ExportRoom(String),
+    ImportRoom,
 }
 
 struct ShelfApp {
@@ -1828,6 +1830,11 @@ impl eframe::App for ShelfApp {
                                     }
                                 });
                                 ui.horizontal(|ui| {
+                                    if capsule(ui, "Restore room", Look::Glass, 28.0, None, true).clicked() {
+                                        actions.push(Action::ImportRoom);
+                                    }
+                                });
+                                ui.horizontal(|ui| {
                                     ui.add(
                                         egui::TextEdit::singleline(
                                             &mut self.room_assignment_input,
@@ -2282,6 +2289,9 @@ impl eframe::App for ShelfApp {
                                             );
                                         }
                                         if room.owner_public_key == self.device_public_key {
+                                            if capsule(ui, "Export backup", Look::Glass, 28.0, Some(ui.available_width()), true).clicked() {
+                                                actions.push(Action::ExportRoom(room.id.clone()));
+                                            }
                                             ui.horizontal(|ui| {
                                                 ui.add(
                                                     egui::TextEdit::singleline(&mut self.room_expiration_input)
@@ -2865,6 +2875,23 @@ impl eframe::App for ShelfApp {
                         _ => Target::Peers(group.members),
                     };
                     self.set_status(format!("Device group active: {}", group.name));
+                }
+                Action::ExportRoom(room_id) => {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_title("Export room backup")
+                        .set_file_name("shelf-room.zip")
+                        .save_file()
+                    {
+                        self.handle.send(Command::ExportRoomBackup { room_id, path });
+                    }
+                }
+                Action::ImportRoom => {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Shelf room backup", &["zip"])
+                        .pick_file()
+                    {
+                        self.handle.send(Command::ImportRoomBackup { path });
+                    }
                 }
                 Action::UpdateRoom { room_id, update } => {
                     if matches!(update, RoomUpdate::AddAnnouncement { .. }) {

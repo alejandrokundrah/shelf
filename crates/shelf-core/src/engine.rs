@@ -76,6 +76,8 @@ pub enum Command {
     SetReceivingPaused(bool),
     SetReceiveDirectory(PathBuf),
     SaveDeviceGroup(DeviceGroup),
+    ExportRoomBackup { room_id: String, path: PathBuf },
+    ImportRoomBackup { path: PathBuf },
     CancelTransfers,
     Shutdown,
 }
@@ -295,6 +297,80 @@ impl Shared {
         match result {
             Ok(groups) => self.emit(Event::DeviceGroups(groups)),
             Err(error) => self.emit(Event::Error(format!("could not save device group: {error}"))),
+        }
+    }
+
+    fn export_room_backup(&self, room_id: String, path: PathBuf) {
+        let result = (|| -> Result<()> {
+            let room = self
+                .config
+                .lock()
+                .unwrap()
+                .rooms
+                .iter()
+                .find(|room| room.id == room_id)
+                .cloned()
+                .ok_or_else(|| anyhow!("room not found"))?;
+            let output = std::fs::File::create(&path)?;
+            let mut archive = zip::ZipWriter::new(output);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            archive.start_file("room.json", options)?;
+            archive.write_all(&serde_json::to_vec_pretty(&room)?)?;
+            let folder = crate::store::room_dir(&room_id);
+            for file in &room.files {
+                let source = folder.join(&file.name);
+                if source.is_file() {
+                    archive.start_file(format!("files/{}", file.name), options)?;
+                    let mut input = std::fs::File::open(source)?;
+                    std::io::copy(&mut input, &mut archive)?;
+                }
+            }
+            archive.finish()?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => self.emit(Event::Info(format!("Room backup saved to {}", path.display()))),
+            Err(error) => self.emit(Event::Error(format!("room backup failed: {error}"))),
+        }
+    }
+
+    fn import_room_backup(&self, path: PathBuf) {
+        let result = (|| -> Result<Room> {
+            let input = std::fs::File::open(&path)?;
+            let mut archive = zip::ZipArchive::new(input)?;
+            let mut room_json = String::new();
+            archive.by_name("room.json")?.read_to_string(&mut room_json)?;
+            let room: Room = serde_json::from_str(&room_json)?;
+            {
+                let mut config = self.config.lock().unwrap();
+                if config.rooms.iter().any(|existing| existing.id == room.id) {
+                    bail!("a room with this ID already exists");
+                }
+                config.rooms.push(room.clone());
+                config.save()?;
+            }
+            let folder = crate::store::room_dir(&room.id);
+            std::fs::create_dir_all(&folder)?;
+            for index in 0..archive.len() {
+                let mut entry = archive.by_index(index)?;
+                let Some(relative) = entry.enclosed_name().map(PathBuf::from) else {
+                    bail!("backup contains an unsafe path");
+                };
+                if let Ok(file_name) = relative.strip_prefix("files") {
+                    let destination = folder.join(file_name);
+                    if let Some(parent) = destination.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    let mut output = std::fs::File::create(destination)?;
+                    std::io::copy(&mut entry, &mut output)?;
+                }
+            }
+            Ok(room)
+        })();
+        match result {
+            Ok(room) => self.emit(Event::RoomUpdated(room)),
+            Err(error) => self.emit(Event::Error(format!("room restore failed: {error}"))),
         }
     }
 
@@ -716,6 +792,8 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                 }
             }
             Command::SaveDeviceGroup(group) => shared.save_device_group(group),
+            Command::ExportRoomBackup { room_id, path } => shared.export_room_backup(room_id, path),
+            Command::ImportRoomBackup { path } => shared.import_room_backup(path),
             Command::CancelTransfers => {
                 shared.cancel_transfers.store(true, Ordering::SeqCst);
                 shared.emit(Event::Info("Cancelling transfers...".into()));
