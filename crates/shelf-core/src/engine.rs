@@ -840,6 +840,18 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                     shared.emit(Event::Error(
                         "Only the room owner can delete this room".into(),
                     ));
+                    // The UI removes the room optimistically; put it back if it still exists.
+                    let existing = shared
+                        .config
+                        .lock()
+                        .unwrap()
+                        .rooms
+                        .iter()
+                        .find(|room| room.id == room_id)
+                        .cloned();
+                    if let Some(room) = existing {
+                        shared.emit(Event::RoomUpdated(room));
+                    }
                 } else {
                     let targets = shared.targets(&Target::Peers(member_keys));
                     {

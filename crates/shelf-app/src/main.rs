@@ -2947,6 +2947,7 @@ impl eframe::App for ShelfApp {
                                     );
                                 } else {
                                     for room in &rooms {
+ ui.push_id(room.id.clone(), |ui| {
                                         ui.set_width(ui.available_width());
                                         hairline(ui);
                                         ui.vertical(|ui| {
@@ -3020,6 +3021,7 @@ impl eframe::App for ShelfApp {
                                             }
                                         });
                                         for file in room.files.iter().take(20) {
+ ui.push_id(file.hash.clone(), |ui| {
                                             ui.horizontal_wrapped(|ui| {
                                                 ui.label(
                                                     RichText::new(format!(
@@ -3100,7 +3102,8 @@ impl eframe::App for ShelfApp {
                                                     });
                                                 }
                                             });
-                                        }
+                                        });
+ }
                                         if !room.announcements.is_empty() {
                                             ui.add_space(4.0);
                                             ui.label(RichText::new(tr("Announcements")).size(12.0).color(p.text2));
@@ -3336,7 +3339,8 @@ impl eframe::App for ShelfApp {
                                                 .color(p.text2),
                                             );
                                         }
-                                    }
+                                    });
+ }
                                 }
                             });
                         });
@@ -3810,6 +3814,14 @@ impl eframe::App for ShelfApp {
                     }
                 }
                 Action::DeleteRoom(room_id) => {
+                    // Remove it from the screen straight away; the engine confirms (or restores it
+                    // if the delete is refused).
+                    self.rooms.retain(|room| room.id != room_id);
+                    self.room_requests.retain(|request| request.room_id != room_id);
+                    if self.active_room_id.as_deref() == Some(room_id.as_str()) {
+                        self.active_room_id = None;
+                    }
+                    self.set_status("Room deleted");
                     self.handle.send(Command::DeleteRoom { room_id });
                 }
                 Action::RequestRoomFile { room_id } => {
