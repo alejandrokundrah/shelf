@@ -2074,7 +2074,7 @@ impl eframe::App for ShelfApp {
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.group_name_input)
                                     .hint_text("New group name")
-                                    .desired_width(ui.available_width() - 96.0),
+                                    .desired_width((ui.available_width() - 108.0).max(60.0)),
                             );
                             if capsule(ui, "Save group", Look::Glass, 28.0, Some(88.0), !self.group_name_input.trim().is_empty()).clicked() {
                                 actions.push(Action::SaveDeviceGroup);
@@ -2119,7 +2119,7 @@ impl eframe::App for ShelfApp {
                                     ui.add(
                                         egui::TextEdit::singleline(&mut self.room_name_input)
                                             .hint_text(tr("New class or team room"))
-                                            .desired_width(ui.available_width() - 86.0),
+                                            .desired_width((ui.available_width() - 100.0).max(60.0)),
                                     );
                                     if capsule(
                                         ui,
@@ -2145,7 +2145,7 @@ impl eframe::App for ShelfApp {
                                             &mut self.room_assignment_input,
                                         )
                                         .hint_text("Assignment name for dropped files")
-                                        .desired_width(ui.available_width() - 86.0),
+                                        .desired_width((ui.available_width() - 100.0).max(60.0)),
                                     );
                                     if capsule(
                                         ui,
@@ -2167,7 +2167,7 @@ impl eframe::App for ShelfApp {
                                     ui.add(
                                         egui::TextEdit::singleline(&mut self.room_request_input)
                                             .hint_text(tr("Request a file from the room"))
-                                            .desired_width(ui.available_width() - 86.0),
+                                            .desired_width((ui.available_width() - 100.0).max(60.0)),
                                     );
                                     if capsule(
                                         ui,
@@ -2191,7 +2191,7 @@ impl eframe::App for ShelfApp {
                                     ui.add(
                                         egui::TextEdit::singleline(&mut self.room_announcement_input)
                                             .hint_text(tr("Team announcement"))
-                                            .desired_width(ui.available_width() - 86.0),
+                                            .desired_width((ui.available_width() - 100.0).max(60.0)),
                                     );
                                     if capsule(
                                         ui,
@@ -2219,7 +2219,7 @@ impl eframe::App for ShelfApp {
                                     ui.add(
                                         egui::TextEdit::singleline(&mut self.room_clipboard_input)
                                             .hint_text(tr("Shared clipboard entry"))
-                                            .desired_width(ui.available_width() - 86.0),
+                                            .desired_width((ui.available_width() - 100.0).max(60.0)),
                                     );
                                     if capsule(
                                         ui,
@@ -2242,18 +2242,18 @@ impl eframe::App for ShelfApp {
                                         }
                                     }
                                 });
-                                ui.horizontal(|ui| {
+                                ui.vertical(|ui| {
                                     ui.add(
                                         egui::TextEdit::singleline(&mut self.room_note_title_input)
                                             .hint_text("Note title")
-                                            .desired_width(ui.available_width() * 0.38),
+                                            .desired_width(ui.available_width()),
                                     );
                                     ui.add(
                                         egui::TextEdit::singleline(&mut self.room_note_body_input)
                                             .hint_text("Shared note")
-                                            .desired_width(ui.available_width() * 0.38),
+                                            .desired_width(ui.available_width()),
                                     );
-                                    if capsule(ui, tr("Add note"), Look::Glass, 28.0, None, self.active_room_id.is_some()).clicked() {
+                                    if capsule(ui, tr("Add note"), Look::Glass, 28.0, Some(ui.available_width()), self.active_room_id.is_some()).clicked() {
                                         if let Some(room_id) = self.active_room_id.clone() {
                                             actions.push(Action::UpdateRoom {
                                                 room_id,
@@ -2265,18 +2265,18 @@ impl eframe::App for ShelfApp {
                                         }
                                     }
                                 });
-                                ui.horizontal(|ui| {
+                                ui.vertical(|ui| {
                                     ui.add(
                                         egui::TextEdit::singleline(&mut self.room_link_title_input)
                                             .hint_text("Link title")
-                                            .desired_width(ui.available_width() * 0.32),
+                                            .desired_width(ui.available_width()),
                                     );
                                     ui.add(
                                         egui::TextEdit::singleline(&mut self.room_link_url_input)
                                             .hint_text("https:// shared link")
-                                            .desired_width(ui.available_width() * 0.42),
+                                            .desired_width(ui.available_width()),
                                     );
-                                    if capsule(ui, tr("Add link"), Look::Glass, 28.0, None, self.active_room_id.is_some()).clicked() {
+                                    if capsule(ui, tr("Add link"), Look::Glass, 28.0, Some(ui.available_width()), self.active_room_id.is_some()).clicked() {
                                         if let Some(room_id) = self.active_room_id.clone() {
                                             actions.push(Action::UpdateRoom {
                                                 room_id,
@@ -2288,16 +2288,16 @@ impl eframe::App for ShelfApp {
                                         }
                                     }
                                 });
-                                ui.horizontal(|ui| {
+                                ui.vertical(|ui| {
                                     ui.add(
                                         egui::TextEdit::singleline(&mut self.room_id_input)
                                             .hint_text("Room ID")
-                                            .desired_width(ui.available_width() * 0.48),
+                                            .desired_width(ui.available_width()),
                                     );
                                     ui.add(
                                         egui::TextEdit::singleline(&mut self.room_code_input)
                                             .hint_text("Invite code")
-                                            .desired_width(ui.available_width() * 0.48),
+                                            .desired_width(ui.available_width()),
                                     );
                                 });
                                 for device in &paired {
@@ -2406,7 +2406,7 @@ impl eframe::App for ShelfApp {
                                                     RichText::new(format!(
                                                         "{} · {}",
                                                         shorten(&file.name, 28),
-                                                        format!("{} Â· v{}", human_size(file.size), file.version)
+                                                        format!("{} · v{}", human_size(file.size), file.version)
                                                     ))
                                                     .size(11.5)
                                                     .color(p.text2),
@@ -2601,7 +2601,7 @@ impl eframe::App for ShelfApp {
                                                 ui.add(
                                                     egui::TextEdit::singleline(&mut self.room_expiration_input)
                                                         .hint_text("Expiration Unix seconds (blank = none)")
-                                                        .desired_width(ui.available_width() - 96.0),
+                                                        .desired_width((ui.available_width() - 108.0).max(60.0)),
                                                 );
                                                 if capsule(ui, tr("Set expiry"), Look::Glass, 28.0, Some(88.0), true).clicked() {
                                                     let expires_at = self.room_expiration_input.trim().parse::<u64>().ok();
