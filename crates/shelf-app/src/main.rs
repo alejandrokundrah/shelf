@@ -1184,6 +1184,8 @@ enum Action {
     Remove(usize),
     ClearAll,
     CancelTransfers,
+    CancelTransfer { direction: TransferDirection, name: String, peer: String },
+    ResumeSend(String),
     CreateRoom,
     JoinRoom(SocketAddr),
     DeleteRoomFile { room_id: String, hash: String },
@@ -1215,6 +1217,8 @@ struct ShelfApp {
     target: Target,
     status: String,
     transfers: Vec<TransferStatus>,
+    /// Where each dropped file came from, so a failed upload can be resumed.
+    sent_sources: std::collections::HashMap<String, (Target, PathBuf)>,
     audit: Vec<String>,
     rooms: Vec<Room>,
     room_name_input: String,
@@ -1334,6 +1338,7 @@ impl ShelfApp {
             target: Target::All,
             status: String::new(),
             transfers: Vec::new(),
+            sent_sources: std::collections::HashMap::new(),
             audit: Vec::new(),
             rooms: Vec::new(),
             room_name_input: String::new(),
@@ -1766,6 +1771,11 @@ impl eframe::App for ShelfApp {
                 }
             } else {
                 self.set_status(format!("Sending {} file(s)...", dropped.len()));
+                for path in &dropped {
+                    if let Some(label) = path.file_name().map(|n| n.to_string_lossy().to_string()) {
+                        self.sent_sources.insert(label, (self.target.clone(), path.clone()));
+                    }
+                }
                 self.handle.send(Command::Send {
                     target: self.target.clone(),
                     payload: Payload::Files(dropped),
@@ -1966,13 +1976,31 @@ impl eframe::App for ShelfApp {
                                 );
                             }
                             thin_progress(ui, fraction);
-                            if !transfer.finished
-                                && capsule(ui, tr("Cancel"), Look::Tint(p.red), 24.0, None, true)
-                                    .clicked()
-                            {
-                                actions.push(Action::CancelTransfers);
-                            }
+                            ui.horizontal(|ui| {
+                                if !transfer.finished
+                                    && capsule(ui, tr("Cancel"), Look::Tint(p.red), 24.0, None, true)
+                                        .clicked()
+                                {
+                                    actions.push(Action::CancelTransfer {
+                                        direction: transfer.direction,
+                                        name: transfer.name.clone(),
+                                        peer: transfer.peer.clone(),
+                                    });
+                                }
+                                if transfer.error.is_some()
+                                    && transfer.direction == TransferDirection::Upload
+                                    && self.sent_sources.contains_key(&transfer.name)
+                                    && capsule(ui, "Resume", Look::Primary, 24.0, None, true).clicked()
+                                {
+                                    actions.push(Action::ResumeSend(transfer.name.clone()));
+                                }
+                            });
                         });
+                    }
+                    if self.transfers.iter().filter(|t| !t.finished).count() > 1
+                        && capsule(ui, "Cancel all", Look::Glass, 24.0, None, true).clicked()
+                    {
+                        actions.push(Action::CancelTransfers);
                     }
 
                     // Drop zone and clipboard.
@@ -3098,6 +3126,18 @@ impl eframe::App for ShelfApp {
                     self.status = "Shelf cleared".to_string();
                 }
                 Action::CancelTransfers => self.handle.send(Command::CancelTransfers),
+                Action::CancelTransfer { direction, name, peer } => {
+                    self.handle.send(Command::CancelTransfer { direction, name, peer });
+                }
+                Action::ResumeSend(name) => {
+                    if let Some((target, path)) = self.sent_sources.get(&name).cloned() {
+                        // The receiver keeps the partial file, so this continues where it stopped.
+                        self.transfers
+                            .retain(|t| !(t.direction == TransferDirection::Upload && t.name == name));
+                        self.set_status(format!("Resuming {name}..."));
+                        self.handle.send(Command::Send { target, payload: Payload::Files(vec![path]) });
+                    }
+                }
                 Action::CreateRoom => {
                     let name = self.room_name_input.trim().to_string();
                     if !name.is_empty() {
