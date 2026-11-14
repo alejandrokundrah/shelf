@@ -663,6 +663,11 @@ struct ShelfApp {
     room_assignment_input: String,
     room_announcement_input: String,
     room_clipboard_input: String,
+    room_note_title_input: String,
+    room_note_body_input: String,
+    room_link_title_input: String,
+    room_link_url_input: String,
+    room_expiration_input: String,
     assignment_title_input: String,
     assignment_deadline_input: String,
     assignment_instructions_input: String,
@@ -763,6 +768,11 @@ impl ShelfApp {
             room_assignment_input: String::new(),
             room_announcement_input: String::new(),
             room_clipboard_input: String::new(),
+            room_note_title_input: String::new(),
+            room_note_body_input: String::new(),
+            room_link_title_input: String::new(),
+            room_link_url_input: String::new(),
+            room_expiration_input: String::new(),
             assignment_title_input: String::new(),
             assignment_deadline_input: String::new(),
             assignment_instructions_input: String::new(),
@@ -1507,6 +1517,52 @@ impl eframe::App for ShelfApp {
                                 });
                                 ui.horizontal(|ui| {
                                     ui.add(
+                                        egui::TextEdit::singleline(&mut self.room_note_title_input)
+                                            .hint_text("Note title")
+                                            .desired_width(ui.available_width() * 0.38),
+                                    );
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.room_note_body_input)
+                                            .hint_text("Shared note")
+                                            .desired_width(ui.available_width() * 0.38),
+                                    );
+                                    if capsule(ui, "Add note", Look::Glass, 28.0, None, self.active_room_id.is_some()).clicked() {
+                                        if let Some(room_id) = self.active_room_id.clone() {
+                                            actions.push(Action::UpdateRoom {
+                                                room_id,
+                                                update: RoomUpdate::AddNote {
+                                                    title: self.room_note_title_input.trim().to_string(),
+                                                    body: self.room_note_body_input.trim().to_string(),
+                                                },
+                                            });
+                                        }
+                                    }
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.room_link_title_input)
+                                            .hint_text("Link title")
+                                            .desired_width(ui.available_width() * 0.32),
+                                    );
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.room_link_url_input)
+                                            .hint_text("https:// shared link")
+                                            .desired_width(ui.available_width() * 0.42),
+                                    );
+                                    if capsule(ui, "Add link", Look::Glass, 28.0, None, self.active_room_id.is_some()).clicked() {
+                                        if let Some(room_id) = self.active_room_id.clone() {
+                                            actions.push(Action::UpdateRoom {
+                                                room_id,
+                                                update: RoomUpdate::AddLink {
+                                                    title: self.room_link_title_input.trim().to_string(),
+                                                    url: self.room_link_url_input.trim().to_string(),
+                                                },
+                                            });
+                                        }
+                                    }
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.add(
                                         egui::TextEdit::singleline(&mut self.room_id_input)
                                             .hint_text("Room ID")
                                             .desired_width(ui.available_width() * 0.48),
@@ -1623,7 +1679,7 @@ impl eframe::App for ShelfApp {
                                                     RichText::new(format!(
                                                         "{} · {}",
                                                         shorten(&file.name, 28),
-                                                        human_size(file.size)
+                                                        format!("{} Â· v{}", human_size(file.size), file.version)
                                                     ))
                                                     .size(11.5)
                                                     .color(p.text2),
@@ -1675,6 +1731,25 @@ impl eframe::App for ShelfApp {
                                                     actions.push(Action::DeleteRoomFile {
                                                         room_id: room.id.clone(),
                                                         hash: file.hash.clone(),
+                                                    });
+                                                }
+                                                if room.can_edit(&self.device_public_key)
+                                                    && capsule(
+                                                        ui,
+                                                        if file.downloads_allowed { "Restrict" } else { "Allow" },
+                                                        Look::Glass,
+                                                        24.0,
+                                                        None,
+                                                        true,
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    actions.push(Action::UpdateRoom {
+                                                        room_id: room.id.clone(),
+                                                        update: RoomUpdate::SetFileDownloads {
+                                                            hash: file.hash.clone(),
+                                                            allowed: !file.downloads_allowed,
+                                                        },
                                                     });
                                                 }
                                             });
@@ -1760,7 +1835,52 @@ impl eframe::App for ShelfApp {
                                                 );
                                             }
                                         }
+                                        if !room.notes.is_empty() {
+                                            ui.add_space(4.0);
+                                            ui.label(RichText::new("Shared notes").size(12.0).color(p.text2));
+                                            for note in room.notes.iter().rev().take(5) {
+                                                ui.add(
+                                                    egui::Label::new(
+                                                        RichText::new(format!("{}: {}", note.title, note.body))
+                                                            .size(11.5)
+                                                            .color(p.text),
+                                                    )
+                                                    .wrap(),
+                                                );
+                                            }
+                                        }
+                                        if !room.links.is_empty() {
+                                            ui.add_space(4.0);
+                                            ui.label(RichText::new("Shared links").size(12.0).color(p.text2));
+                                            for link in room.links.iter().rev().take(5) {
+                                                ui.hyperlink_to(
+                                                    RichText::new(&link.title).size(11.5),
+                                                    &link.url,
+                                                );
+                                            }
+                                        }
+                                        if let Some(expires_at) = room.session_expires_at {
+                                            ui.label(
+                                                RichText::new(format!("Room expires at Unix time {}", expires_at))
+                                                    .size(10.5)
+                                                    .color(p.orange),
+                                            );
+                                        }
                                         if room.owner_public_key == self.device_public_key {
+                                            ui.horizontal(|ui| {
+                                                ui.add(
+                                                    egui::TextEdit::singleline(&mut self.room_expiration_input)
+                                                        .hint_text("Expiration Unix seconds (blank = none)")
+                                                        .desired_width(ui.available_width() - 96.0),
+                                                );
+                                                if capsule(ui, "Set expiry", Look::Glass, 28.0, Some(88.0), true).clicked() {
+                                                    let expires_at = self.room_expiration_input.trim().parse::<u64>().ok();
+                                                    actions.push(Action::UpdateRoom {
+                                                        room_id: room.id.clone(),
+                                                        update: RoomUpdate::SetSessionExpiration { expires_at },
+                                                    });
+                                                }
+                                            });
                                             ui.add_space(4.0);
                                             ui.label(RichText::new("Members and roles").size(12.0).color(p.text2));
                                             for member in room.members.iter().filter(|member| member.public_key != room.owner_public_key) {
@@ -2309,6 +2429,17 @@ impl eframe::App for ShelfApp {
                     }
                     if matches!(update, RoomUpdate::AddClipboard { .. }) {
                         self.room_clipboard_input.clear();
+                    }
+                    if matches!(update, RoomUpdate::AddNote { .. }) {
+                        self.room_note_title_input.clear();
+                        self.room_note_body_input.clear();
+                    }
+                    if matches!(update, RoomUpdate::AddLink { .. }) {
+                        self.room_link_title_input.clear();
+                        self.room_link_url_input.clear();
+                    }
+                    if matches!(update, RoomUpdate::SetSessionExpiration { .. }) {
+                        self.room_expiration_input.clear();
                     }
                     self.handle.send(Command::UpdateRoom { room_id, update });
                 }

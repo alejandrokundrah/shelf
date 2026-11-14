@@ -31,6 +31,10 @@ pub enum RoomUpdate {
     LockFile { hash: String },
     UnlockFile { hash: String },
     SetMemberRole { public_key: String, role: RoomRole },
+    AddNote { title: String, body: String },
+    AddLink { title: String, url: String },
+    SetFileDownloads { hash: String, allowed: bool },
+    SetSessionExpiration { expires_at: Option<u64> },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -287,6 +291,40 @@ impl Room {
                     && self.members.iter_mut().find(|member| member.public_key == *public_key).map(|member| member.role = *role).is_some() =>
             {
                 "changed a member role".to_string()
+            }
+            RoomUpdate::AddNote { title, body }
+                if self.can_edit(requester) && !title.trim().is_empty() && !body.trim().is_empty() =>
+            {
+                self.notes.push(RoomNote {
+                    id: format!("note-{}", uuid_like_id()),
+                    title: title.trim().to_string(),
+                    body: body.trim().to_string(),
+                    updated_by: requester.to_string(),
+                    updated_at: now,
+                });
+                "added a shared note".to_string()
+            }
+            RoomUpdate::AddLink { title, url }
+                if self.can_edit(requester)
+                    && !title.trim().is_empty()
+                    && (url.starts_with("https://") || url.starts_with("http://")) =>
+            {
+                self.links.push(RoomLink {
+                    title: title.trim().to_string(),
+                    url: url.trim().to_string(),
+                    added_by: requester.to_string(),
+                    added_at: now,
+                });
+                "added a shared link".to_string()
+            }
+            RoomUpdate::SetFileDownloads { hash, allowed } if self.can_edit(requester) => {
+                let file = self.files.iter_mut().find(|file| file.hash == *hash)?;
+                file.downloads_allowed = *allowed;
+                if *allowed { "allowed file downloads" } else { "restricted file downloads" }.to_string()
+            }
+            RoomUpdate::SetSessionExpiration { expires_at } if self.can_delete(requester) => {
+                self.session_expires_at = *expires_at;
+                if expires_at.is_some() { "set a room expiration" } else { "removed room expiration" }.to_string()
             }
             _ => return None,
         };
