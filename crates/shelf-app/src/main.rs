@@ -1813,6 +1813,17 @@ impl eframe::App for ShelfApp {
                         });
                     }
                     for (i, it) in self.items.iter().enumerate() {
+                        let can_remove = it
+                            .item
+                            .room_id
+                            .as_ref()
+                            .map(|room_id| {
+                                rooms.iter().any(|room| {
+                                    &room.id == room_id
+                                        && room.owner_public_key == self.device_public_key
+                                })
+                            })
+                            .unwrap_or(true);
                         card(ui, |ui| {
                             ui.horizontal(|ui| {
                                 let (icon_rect, _) =
@@ -1858,10 +1869,19 @@ impl eframe::App for ShelfApp {
                                 {
                                     actions.push(Action::Reveal(i));
                                 }
-                                if capsule(ui, "Remove", Look::Tint(p.red), 26.0, None, true)
+                                if can_remove {
+                                    if capsule(
+                                        ui,
+                                        "Remove",
+                                        Look::Tint(p.red),
+                                        26.0,
+                                        None,
+                                        true,
+                                    )
                                     .clicked()
-                                {
-                                    actions.push(Action::Remove(i));
+                                    {
+                                        actions.push(Action::Remove(i));
+                                    }
                                 }
                             });
                         });

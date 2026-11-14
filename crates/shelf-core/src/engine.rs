@@ -86,6 +86,7 @@ pub struct NearbyDevice {
 #[derive(Clone, Debug)]
 pub struct ReceivedItem {
     pub id: u64,
+    pub room_id: Option<String>,
     pub kind: ItemKind,
     pub name: String,
     pub from: String,
@@ -1203,6 +1204,7 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
     }
     shared.emit(Event::Received(ReceivedItem {
         id: rand::random::<u64>(),
+        room_id: header.room_id.clone(),
         kind: header.kind,
         name: header.name,
         from: peer.name,
