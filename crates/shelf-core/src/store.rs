@@ -690,6 +690,15 @@ mod tests {
     }
 
     #[test]
+    fn viewer_cannot_upload_to_room() {
+        let mut room = room();
+        room.members[0].role = RoomRole::Viewer;
+        assert!(!room.can_upload("student"));
+        room.members[0].role = RoomRole::Contributor;
+        assert!(room.can_upload("student"));
+    }
+
+    #[test]
     fn owner_creates_assignments_and_students_submit_once() {
         let mut room = room();
         let assignment = room

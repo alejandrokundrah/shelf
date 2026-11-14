@@ -7,7 +7,7 @@ use crate::protocol::{
     ItemHeader, ItemKind, RoomFileRecord, RoomMemberRecord, RoomMessage, CHUNK, MAX_FILE_BYTES,
     MAX_TEXT_BYTES,
 };
-use crate::store::{inbox_dir, Config, DeviceGroup, PairedPeer, Room, RoomUpdate};
+use crate::store::{inbox_dir, Config, DeviceGroup, PairedPeer, Room, RoomUpdate, Submission};
 use anyhow::{anyhow, bail, Context, Result};
 use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
@@ -717,6 +717,20 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                 });
             }
             Command::UploadRoomFiles { room_id, paths } => {
+                let allowed = {
+                    let config = shared.config.lock().unwrap();
+                    config
+                        .rooms
+                        .iter()
+                        .find(|room| room.id == room_id)
+                        .is_some_and(|room| room.can_upload(&config.public_key))
+                };
+                if !allowed {
+                    shared.emit(Event::Error(
+                        "You do not have permission to upload to this room".into(),
+                    ));
+                    continue;
+                }
                 let targets = room_targets(&shared, &room_id);
                 if targets.is_empty() {
                     shared.emit(Event::Error("No room members are reachable. Open Shelf on the other devices and try again.".into()));
@@ -837,6 +851,29 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                 paths,
                 assignment,
             } => {
+                let assignment_id = {
+                    let config = shared.config.lock().unwrap();
+                    let Some(room) = config.rooms.iter().find(|room| room.id == room_id) else {
+                        shared.emit(Event::Error("Room not found".into()));
+                        continue;
+                    };
+                    if !room.can_upload(&config.public_key) {
+                        shared.emit(Event::Error(
+                            "You do not have permission to submit to this room".into(),
+                        ));
+                        continue;
+                    }
+                    room.assignments
+                        .iter()
+                        .find(|item| {
+                            item.id == assignment || item.title.eq_ignore_ascii_case(&assignment)
+                        })
+                        .map(|item| item.id.clone())
+                };
+                let Some(assignment_id) = assignment_id else {
+                    shared.emit(Event::Error("Assignment not found".into()));
+                    continue;
+                };
                 let targets = room_targets(&shared, &room_id);
                 if targets.is_empty() {
                     shared.emit(Event::Error("No room members are reachable. Open Shelf on the other devices and try again.".into()));
@@ -847,7 +884,7 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                         targets,
                         room_id,
                         paths,
-                        Some(assignment),
+                        Some(assignment_id),
                     ));
                 }
             }
@@ -1728,22 +1765,26 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
         bail!("item from {} is too large", peer.name);
     }
     if let Some(room_id) = &header.room_id {
-        let allowed = {
+        let (room_member_can_upload, downloads_allowed) = {
             let config = shared.config.lock().unwrap();
-            config
+            let room = config
                 .rooms
                 .iter()
                 .find(|room| room.id == *room_id)
-                .map(|room| {
-                    room.files
-                        .iter()
-                        .find(|file| file.hash == hex::encode(header.hash))
-                        .map(|file| file.downloads_allowed)
-                        .unwrap_or(true)
-                })
-                .unwrap_or(false)
+                .ok_or_else(|| anyhow!("room not found"))?;
+            let can_upload = room.has_member(&peer.public_key) && room.can_upload(&peer.public_key);
+            let downloads_allowed = room
+                .files
+                .iter()
+                .find(|file| file.hash == hex::encode(header.hash))
+                .map(|file| file.downloads_allowed)
+                .unwrap_or(true);
+            (can_upload, downloads_allowed)
         };
-        if !allowed {
+        if !room_member_can_upload {
+            bail!("this member cannot upload to the room");
+        }
+        if !downloads_allowed {
             bail!("downloads for this room file are restricted");
         }
     }
@@ -1857,8 +1898,9 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
     if let Some(room_id) = &header.room_id {
         let mut config = shared.config.lock().unwrap();
         if let Some(room) = config.rooms.iter_mut().find(|room| &room.id == room_id) {
-            room.add_file(crate::store::RoomFile {
-                hash: hex::encode(header.hash),
+            let hash = hex::encode(header.hash);
+            let added = room.add_file(crate::store::RoomFile {
+                hash: hash.clone(),
                 name: header.name.clone(),
                 size: header.size,
                 uploaded_by: peer.name.clone(),
@@ -1872,6 +1914,19 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
                 downloads_allowed: true,
                 locked_by: None,
             });
+            if added {
+                if let Some(assignment_id) = header.submission.as_deref() {
+                    room.record_submission(Submission {
+                        assignment_id: assignment_id.to_string(),
+                        file_hash: hash,
+                        student_public_key: peer.public_key.clone(),
+                        submitted_at: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or_default(),
+                    });
+                }
+            }
             config.save()?;
         }
     }
@@ -2283,21 +2338,33 @@ async fn send_room_file(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or_default();
+        let uploader_key = config.public_key.clone();
         if let Some(room) = config.rooms.iter_mut().find(|room| room.id == room_id) {
-            room.add_file(crate::store::RoomFile {
-                hash: hex::encode(hash),
+            let hash = hex::encode(hash);
+            let added = room.add_file(crate::store::RoomFile {
+                hash: hash.clone(),
                 name: label,
                 size: std::fs::metadata(&path)
                     .map(|m| m.len())
                     .unwrap_or_default(),
                 uploaded_by: uploader,
                 uploaded_at: timestamp,
-                submission,
+                submission: submission.clone(),
                 version: 0,
                 previous_hash: None,
                 downloads_allowed: true,
                 locked_by: None,
             });
+            if added {
+                if let Some(assignment_id) = submission.as_deref() {
+                    room.record_submission(Submission {
+                        assignment_id: assignment_id.to_string(),
+                        file_hash: hash,
+                        student_public_key: uploader_key,
+                        submitted_at: timestamp,
+                    });
+                }
+            }
             let _ = config.save();
         }
     }
