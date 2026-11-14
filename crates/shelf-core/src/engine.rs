@@ -9,10 +9,12 @@ use crate::protocol::{
 };
 use crate::store::{inbox_dir, Config, PairedPeer, Room, RoomUpdate};
 use anyhow::{anyhow, bail, Context, Result};
+use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use rand::Rng;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1167,6 +1169,46 @@ fn unique_inbox_path(inbox: &Path, name: &str) -> PathBuf {
     }
 }
 
+fn extract_transfer_archive(
+    archive_path: &Path,
+    base: &Path,
+    original_name: &str,
+    folder: bool,
+) -> Result<PathBuf> {
+    let input = std::fs::File::open(archive_path)?;
+    let mut archive = zip::ZipArchive::new(input)?;
+    if folder {
+        let destination = unique_inbox_path(base, original_name);
+        std::fs::create_dir_all(&destination)?;
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index)?;
+            let relative = entry
+                .enclosed_name()
+                .ok_or_else(|| anyhow!("archive contains an unsafe path"))?
+                .to_path_buf();
+            let target = destination.join(relative);
+            if entry.is_dir() {
+                std::fs::create_dir_all(&target)?;
+            } else {
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let mut output = std::fs::File::create(&target)?;
+                std::io::copy(&mut entry, &mut output)?;
+            }
+        }
+        Ok(destination)
+    } else {
+        let destination = unique_inbox_path(base, original_name);
+        let mut entry = archive
+            .by_index(0)
+            .context("compressed transfer did not contain a file")?;
+        let mut output = std::fs::File::create(&destination)?;
+        std::io::copy(&mut entry, &mut output)?;
+        Ok(destination)
+    }
+}
+
 fn emit_progress(
     shared: &Arc<Shared>,
     direction: TransferDirection,
@@ -1309,7 +1351,15 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
             header.size,
             &mut last_percent,
         );
-        let text = String::from_utf8(buf).map_err(|_| anyhow!("text was not valid UTF-8"))?;
+        let text_bytes = if header.compressed {
+            let mut decoder = GzDecoder::new(&buf[..]);
+            let mut decoded = Vec::new();
+            decoder.read_to_end(&mut decoded)?;
+            decoded
+        } else {
+            buf
+        };
+        let text = String::from_utf8(text_bytes).map_err(|_| anyhow!("text was not valid UTF-8"))?;
         (None, Some(text))
     } else {
         let base = header
@@ -1338,8 +1388,24 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
             offset,
         )
         .await?;
-        let path = unique_inbox_path(&base, &header.name);
-        tokio::fs::rename(&partial, &path).await?;
+        let archive_path = unique_inbox_path(&base, &header.name);
+        tokio::fs::rename(&partial, &archive_path).await?;
+        let path = if header.compressed {
+            let original_name = header
+                .original_name
+                .as_deref()
+                .unwrap_or(&header.name);
+            let extracted = extract_transfer_archive(
+                &archive_path,
+                &base,
+                original_name,
+                header.folder,
+            )?;
+            let _ = std::fs::remove_file(&archive_path);
+            extracted
+        } else {
+            archive_path
+        };
         (Some(path), None)
     };
 
@@ -1474,16 +1540,16 @@ async fn send_file(
     room_id: Option<&str>,
     submission: Option<&str>,
 ) -> Result<()> {
-    let meta = tokio::fs::metadata(path)
+    let prepared = prepare_transfer(path, label)?;
+    let source_path = prepared.path.clone();
+    let meta = tokio::fs::metadata(&source_path)
         .await
         .with_context(|| format!("source file is unavailable: {}", path.display()))?;
-    if meta.is_dir() {
-        bail!("folders are not supported yet");
-    }
     if meta.len() > MAX_FILE_BYTES {
+        cleanup_transfer(&prepared);
         bail!("file is too large");
     }
-    let mut hash_reader = tokio::fs::File::open(path)
+    let mut hash_reader = tokio::fs::File::open(&source_path)
         .await
         .with_context(|| format!("could not open source file: {}", path.display()))?;
     let mut hasher = Sha256::new();
@@ -1503,14 +1569,20 @@ async fn send_file(
         hash,
         room_id: room_id.map(str::to_owned),
         submission: submission.map(str::to_owned),
+        compressed: prepared.compressed,
+        folder: prepared.folder,
+        original_name: Some(prepared.original_name.clone()),
     };
     let mut last_error = None;
     for attempt in 0..3 {
-        let file = tokio::fs::File::open(path)
+        let file = tokio::fs::File::open(&source_path)
             .await
             .with_context(|| format!("source file disappeared before sending: {}", path.display()))?;
         match push_item(shared, dest, header.clone(), file, label).await {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                cleanup_transfer(&prepared);
+                return Ok(());
+            }
             Err(e) => {
                 let message = e.to_string();
                 if message.contains("cancelled") || message.contains("paused") {
@@ -1523,7 +1595,115 @@ async fn send_file(
             }
         }
     }
+    cleanup_transfer(&prepared);
     Err(last_error.unwrap_or_else(|| anyhow!("transfer failed")))
+}
+
+struct PreparedTransfer {
+    path: PathBuf,
+    original_name: String,
+    compressed: bool,
+    folder: bool,
+    temporary: bool,
+}
+
+fn transfer_temp_path(extension: &str) -> PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    std::env::temp_dir().join(format!("shelf-transfer-{}-{stamp}.{extension}", std::process::id()))
+}
+
+fn add_directory_to_zip(
+    zip: &mut zip::ZipWriter<std::fs::File>,
+    root: &Path,
+    current: &Path,
+    options: zip::write::SimpleFileOptions,
+) -> Result<()> {
+    for entry in std::fs::read_dir(current)? {
+        let entry = entry?;
+        let path = entry.path();
+        let relative = path.strip_prefix(root)?.to_string_lossy().replace('\\', "/");
+        if path.is_dir() {
+            zip.add_directory(format!("{relative}/"), options)?;
+            add_directory_to_zip(zip, root, &path, options)?;
+        } else if path.is_file() {
+            zip.start_file(relative, options)?;
+            let mut file = std::fs::File::open(&path)?;
+            std::io::copy(&mut file, zip)?;
+        }
+    }
+    Ok(())
+}
+
+fn create_zip(source: &Path, entry_name: &str, folder: bool) -> Result<PathBuf> {
+    let archive_path = transfer_temp_path("zip");
+    let file = std::fs::File::create(&archive_path)?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    if folder {
+        add_directory_to_zip(&mut zip, source, source, options)?;
+    } else {
+        zip.start_file(entry_name.replace('\\', "/"), options)?;
+        let mut input = std::fs::File::open(source)?;
+        std::io::copy(&mut input, &mut zip)?;
+    }
+    zip.finish()?.flush()?;
+    Ok(archive_path)
+}
+
+fn prepare_transfer(path: &Path, label: &str) -> Result<PreparedTransfer> {
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("source file is unavailable: {}", path.display()))?;
+    if metadata.is_dir() {
+        return Ok(PreparedTransfer {
+            path: create_zip(path, "", true)?,
+            original_name: label.to_string(),
+            compressed: true,
+            folder: true,
+            temporary: true,
+        });
+    }
+    let archive = create_zip(path, label, false)?;
+    let archive_size = std::fs::metadata(&archive)?.len();
+    if archive_size < metadata.len() {
+        Ok(PreparedTransfer {
+            path: archive,
+            original_name: label.to_string(),
+            compressed: true,
+            folder: false,
+            temporary: true,
+        })
+    } else {
+        let _ = std::fs::remove_file(archive);
+        Ok(PreparedTransfer {
+            path: path.to_path_buf(),
+            original_name: label.to_string(),
+            compressed: false,
+            folder: false,
+            temporary: false,
+        })
+    }
+}
+
+fn cleanup_transfer(prepared: &PreparedTransfer) {
+    if prepared.temporary {
+        let _ = std::fs::remove_file(&prepared.path);
+    }
+}
+
+fn compress_text(bytes: &[u8]) -> Result<(Vec<u8>, bool)> {
+    let mut compressed = Vec::new();
+    let mut encoder = GzEncoder::new(&mut compressed, Compression::default());
+    encoder.write_all(bytes)?;
+    encoder.finish()?;
+    if compressed.len() < bytes.len() {
+        Ok((compressed, true))
+    } else {
+        Ok((bytes.to_vec(), false))
+    }
 }
 
 async fn send_payload(shared: Arc<Shared>, targets: Vec<Dest>, payload: Payload) {
@@ -1544,15 +1724,23 @@ async fn send_payload(shared: Arc<Shared>, targets: Vec<Dest>, payload: Payload)
                 let res = if bytes.len() as u64 > MAX_TEXT_BYTES {
                     Err(anyhow!("text is larger than 1 MB"))
                 } else {
-                    let header = ItemHeader {
-                        kind: ItemKind::Text,
-                        name: "Text".to_string(),
-                        size: bytes.len() as u64,
-                        hash: Sha256::digest(bytes).into(),
-                        room_id: None,
-                        submission: None,
-                    };
-                    push_item(&shared, &dest, header, bytes, "Text").await
+                    match compress_text(bytes) {
+                        Ok((payload_bytes, compressed)) => {
+                            let header = ItemHeader {
+                                kind: ItemKind::Text,
+                                name: "Text".to_string(),
+                                size: payload_bytes.len() as u64,
+                                hash: Sha256::digest(&payload_bytes).into(),
+                                room_id: None,
+                                submission: None,
+                                compressed,
+                                folder: false,
+                                original_name: None,
+                            };
+                            push_item(&shared, &dest, header, &payload_bytes[..], "Text").await
+                        }
+                        Err(error) => Err(error),
+                    }
                 };
                 shared.finish_send(&dest.name, "Text".to_string(), res);
             }
@@ -1569,6 +1757,9 @@ async fn send_payload(shared: Arc<Shared>, targets: Vec<Dest>, payload: Payload)
                     hash: Sha256::digest(png).into(),
                     room_id: None,
                     submission: None,
+                        compressed: false,
+                        folder: false,
+                        original_name: None,
                 };
                 let res = push_item(&shared, &dest, header, &png[..], &label).await;
                 shared.finish_send(&dest.name, label, res);

@@ -23,6 +23,12 @@ pub struct ItemHeader {
     pub room_id: Option<String>,
     #[serde(default)]
     pub submission: Option<String>,
+    #[serde(default)]
+    pub compressed: bool,
+    #[serde(default)]
+    pub folder: bool,
+    #[serde(default)]
+    pub original_name: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
