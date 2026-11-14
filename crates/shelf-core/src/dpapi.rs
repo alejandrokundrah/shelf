@@ -47,7 +47,8 @@ mod imp {
             return None;
         }
         // SAFETY: DPAPI returned a buffer of `cb_data` bytes allocated with LocalAlloc.
-        let bytes = unsafe { std::slice::from_raw_parts(out.pb_data, out.cb_data as usize).to_vec() };
+        let bytes =
+            unsafe { std::slice::from_raw_parts(out.pb_data, out.cb_data as usize).to_vec() };
         unsafe {
             LocalFree(out.pb_data as *mut c_void);
         }
@@ -55,8 +56,14 @@ mod imp {
     }
 
     pub fn protect(data: &[u8]) -> Option<Vec<u8>> {
-        let input = DataBlob { cb_data: data.len() as u32, pb_data: data.as_ptr() as *mut u8 };
-        let mut output = DataBlob { cb_data: 0, pb_data: ptr::null_mut() };
+        let input = DataBlob {
+            cb_data: data.len() as u32,
+            pb_data: data.as_ptr() as *mut u8,
+        };
+        let mut output = DataBlob {
+            cb_data: 0,
+            pb_data: ptr::null_mut(),
+        };
         // SAFETY: all pointers are valid for the duration of the call.
         let ok = unsafe {
             CryptProtectData(
@@ -76,8 +83,14 @@ mod imp {
     }
 
     pub fn unprotect(data: &[u8]) -> Option<Vec<u8>> {
-        let input = DataBlob { cb_data: data.len() as u32, pb_data: data.as_ptr() as *mut u8 };
-        let mut output = DataBlob { cb_data: 0, pb_data: ptr::null_mut() };
+        let input = DataBlob {
+            cb_data: data.len() as u32,
+            pb_data: data.as_ptr() as *mut u8,
+        };
+        let mut output = DataBlob {
+            cb_data: 0,
+            pb_data: ptr::null_mut(),
+        };
         // SAFETY: all pointers are valid for the duration of the call.
         let ok = unsafe {
             CryptUnprotectData(

@@ -15,7 +15,10 @@ fn powershell(script: &str) -> Result<String> {
         .creation_flags(CREATE_NO_WINDOW)
         .output()?;
     if !out.status.success() {
-        bail!("PowerShell failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        bail!(
+            "PowerShell failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
@@ -56,7 +59,9 @@ pub fn read_clipboard() -> Result<Payload> {
     }
     let mut cb = arboard::Clipboard::new()?;
     if let Ok(img) = cb.get_image() {
-        return Ok(Payload::Image(encode_png(img.width, img.height, &img.bytes)?));
+        return Ok(Payload::Image(encode_png(
+            img.width, img.height, &img.bytes,
+        )?));
     }
     if let Ok(text) = cb.get_text() {
         if !text.trim().is_empty() {

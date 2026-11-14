@@ -34,7 +34,7 @@ const PAIR_TTL: Duration = Duration::from_secs(120);
 #[derive(Clone, Debug, PartialEq)]
 pub enum Target {
     All,
-    Peer(String), // public key (hex)
+    Peer(String),       // public key (hex)
     Peers(Vec<String>), // public keys (hex)
 }
 
@@ -46,7 +46,9 @@ pub enum Payload {
 }
 
 pub enum Command {
-    CreateRoom { name: String },
+    CreateRoom {
+        name: String,
+    },
     CreateAssignment {
         room_id: String,
         title: String,
@@ -54,15 +56,27 @@ pub enum Command {
         instructions: String,
         required_files: Vec<String>,
     },
-    UpdateRoom { room_id: String, update: RoomUpdate },
+    UpdateRoom {
+        room_id: String,
+        update: RoomUpdate,
+    },
     JoinRoom {
         addr: SocketAddr,
         room_id: String,
         invite_code: String,
     },
-    UploadRoomFiles { room_id: String, paths: Vec<PathBuf> },
-    DeleteRoomFile { room_id: String, hash: String },
-    RequestRoomFile { room_id: String, name: String },
+    UploadRoomFiles {
+        room_id: String,
+        paths: Vec<PathBuf>,
+    },
+    DeleteRoomFile {
+        room_id: String,
+        hash: String,
+    },
+    RequestRoomFile {
+        room_id: String,
+        name: String,
+    },
     SubmitRoomFiles {
         room_id: String,
         paths: Vec<PathBuf>,
@@ -70,15 +84,32 @@ pub enum Command {
     },
     StartPairing,
     CancelPairing,
-    PairWith { addr: SocketAddr, code: String },
-    Unpair { public_key: String },
-    Send { target: Target, payload: Payload },
+    PairWith {
+        addr: SocketAddr,
+        code: String,
+    },
+    Unpair {
+        public_key: String,
+    },
+    Send {
+        target: Target,
+        payload: Payload,
+    },
     SetReceivingPaused(bool),
     SetReceiveDirectory(PathBuf),
     SaveDeviceGroup(DeviceGroup),
-    ExportRoomBackup { room_id: String, path: PathBuf },
-    ImportRoomBackup { path: PathBuf },
-    CancelTransfers,
+    ExportRoomBackup {
+        room_id: String,
+        path: PathBuf,
+    },
+    ImportRoomBackup {
+        path: PathBuf,
+    },
+    CancelTransfer {
+        direction: TransferDirection,
+        name: String,
+        peer: String,
+    },
     Shutdown,
 }
 
@@ -122,11 +153,20 @@ pub enum Event {
         name: String,
         from: String,
     },
-    Ready { device_name: String, public_key: String },
-    Peers { paired: Vec<PeerStatus>, nearby: Vec<NearbyDevice> },
+    Ready {
+        device_name: String,
+        public_key: String,
+    },
+    Peers {
+        paired: Vec<PeerStatus>,
+        nearby: Vec<NearbyDevice>,
+    },
     DeviceGroups(Vec<DeviceGroup>),
     ReceiveDirectory(Option<PathBuf>),
-    PairingCode { code: String, seconds: u64 },
+    PairingCode {
+        code: String,
+        seconds: u64,
+    },
     PairingCleared,
     PairingResult(Result<String, String>),
     Received(ReceivedItem),
@@ -137,7 +177,11 @@ pub enum Event {
         done: u64,
         total: u64,
     },
-    SendDone { to: String, item: String, error: Option<String> },
+    SendDone {
+        to: String,
+        item: String,
+        error: Option<String>,
+    },
     Info(String),
     Error(String),
 }
@@ -177,8 +221,33 @@ struct Shared {
     last_known_addrs: Mutex<HashMap<String, SocketAddr>>,
     next_id: AtomicU64,
     receiving_paused: std::sync::atomic::AtomicBool,
-    cancel_transfers: std::sync::atomic::AtomicBool,
+    cancelled_transfers: Mutex<HashSet<String>>,
     received_hashes: Mutex<HashSet<[u8; 32]>>,
+}
+
+fn transfer_key(direction: TransferDirection, name: &str, peer: &str) -> String {
+    format!("{direction:?}\0{peer}\0{name}")
+}
+
+fn is_cancelled(
+    shared: &Arc<Shared>,
+    direction: TransferDirection,
+    name: &str,
+    peer: &str,
+) -> bool {
+    shared
+        .cancelled_transfers
+        .lock()
+        .unwrap()
+        .contains(&transfer_key(direction, name, peer))
+}
+
+fn clear_cancelled(shared: &Arc<Shared>, direction: TransferDirection, name: &str, peer: &str) {
+    shared
+        .cancelled_transfers
+        .lock()
+        .unwrap()
+        .remove(&transfer_key(direction, name, peer));
 }
 
 impl Shared {
@@ -211,7 +280,10 @@ impl Shared {
                 .collect();
             (paired, unpaired)
         };
-        self.emit(Event::Peers { paired, nearby: nearby_list });
+        self.emit(Event::Peers {
+            paired,
+            nearby: nearby_list,
+        });
     }
 
     fn add_peer(&self, peer: PairedPeer) {
@@ -290,13 +362,17 @@ impl Shared {
     fn save_device_group(&self, group: DeviceGroup) {
         let result = {
             let mut config = self.config.lock().unwrap();
-            config.device_groups.retain(|existing| existing.name != group.name);
+            config
+                .device_groups
+                .retain(|existing| existing.name != group.name);
             config.device_groups.push(group);
             config.save().map(|()| config.device_groups.clone())
         };
         match result {
             Ok(groups) => self.emit(Event::DeviceGroups(groups)),
-            Err(error) => self.emit(Event::Error(format!("could not save device group: {error}"))),
+            Err(error) => self.emit(Event::Error(format!(
+                "could not save device group: {error}"
+            ))),
         }
     }
 
@@ -330,7 +406,10 @@ impl Shared {
             Ok(())
         })();
         match result {
-            Ok(()) => self.emit(Event::Info(format!("Room backup saved to {}", path.display()))),
+            Ok(()) => self.emit(Event::Info(format!(
+                "Room backup saved to {}",
+                path.display()
+            ))),
             Err(error) => self.emit(Event::Error(format!("room backup failed: {error}"))),
         }
     }
@@ -340,7 +419,9 @@ impl Shared {
             let input = std::fs::File::open(&path)?;
             let mut archive = zip::ZipArchive::new(input)?;
             let mut room_json = String::new();
-            archive.by_name("room.json")?.read_to_string(&mut room_json)?;
+            archive
+                .by_name("room.json")?
+                .read_to_string(&mut room_json)?;
             let room: Room = serde_json::from_str(&room_json)?;
             {
                 let mut config = self.config.lock().unwrap();
@@ -403,9 +484,7 @@ impl Shared {
         };
         match result {
             Ok(room) => self.emit(Event::RoomUpdated(room)),
-            Err(error) => self.emit(Event::Error(format!(
-                "could not save assignment: {error}"
-            ))),
+            Err(error) => self.emit(Event::Error(format!("could not save assignment: {error}"))),
         }
     }
 
@@ -460,7 +539,7 @@ pub fn start(wake: impl Fn() + Send + Sync + 'static) -> Result<(Handle, Receive
         last_known_addrs: Mutex::new(HashMap::new()),
         next_id: AtomicU64::new(1),
         receiving_paused: std::sync::atomic::AtomicBool::new(false),
-        cancel_transfers: std::sync::atomic::AtomicBool::new(false),
+        cancelled_transfers: Mutex::new(HashSet::new()),
         received_hashes: Mutex::new(HashSet::new()),
     });
     std::thread::Builder::new()
@@ -495,7 +574,8 @@ fn start_discovery(
     props.insert("v".to_string(), "1".to_string());
     props.insert("pk".to_string(), public_key.to_string());
     props.insert("name".to_string(), name.to_string());
-    let info = ServiceInfo::new(SERVICE_TYPE, &instance, &host, "", port, props)?.enable_addr_auto();
+    let info =
+        ServiceInfo::new(SERVICE_TYPE, &instance, &host, "", port, props)?.enable_addr_auto();
     let fullname = info.get_fullname().to_string();
     daemon.register(info)?;
 
@@ -510,7 +590,10 @@ fn start_discovery(
                 if pk.len() != 64 || pk == my_key {
                     continue;
                 }
-                let dname = info.get_property_val_str("name").unwrap_or("Unknown").to_string();
+                let dname = info
+                    .get_property_val_str("name")
+                    .unwrap_or("Unknown")
+                    .to_string();
                 let ip = info.get_addresses().iter().find(|a| a.is_ipv4()).copied();
                 if let Some(ip) = ip {
                     let addr = SocketAddr::new(ip, info.get_port());
@@ -604,13 +687,7 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                 deadline,
                 instructions,
                 required_files,
-            } => shared.create_assignment(
-                room_id,
-                title,
-                deadline,
-                instructions,
-                required_files,
-            ),
+            } => shared.create_assignment(room_id, title, deadline, instructions, required_files),
             Command::UpdateRoom { room_id, update } => {
                 let actor = shared.config.lock().unwrap().public_key.clone();
                 match apply_room_update(&shared, &room_id, &actor, &update) {
@@ -691,7 +768,9 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                         .find(|room| room.id == room_id)
                         .map(|room| Target::Peer(room.owner_public_key.clone()))
                 };
-                let targets = target.map(|target| shared.targets(&target)).unwrap_or_default();
+                let targets = target
+                    .map(|target| shared.targets(&target))
+                    .unwrap_or_default();
                 if targets.is_empty() {
                     shared.emit(Event::Error("Room owner is not nearby".into()));
                 } else {
@@ -726,7 +805,10 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                     expires: Instant::now() + PAIR_TTL,
                     id,
                 });
-                shared.emit(Event::PairingCode { code, seconds: PAIR_TTL.as_secs() });
+                shared.emit(Event::PairingCode {
+                    code,
+                    seconds: PAIR_TTL.as_secs(),
+                });
                 let s = shared.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(PAIR_TTL).await;
@@ -763,7 +845,6 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
             }
             Command::Unpair { public_key } => shared.remove_peer(&public_key),
             Command::Send { target, payload } => {
-                shared.cancel_transfers.store(false, Ordering::SeqCst);
                 let targets = shared.targets(&target);
                 if targets.is_empty() {
                     shared.emit(Event::Error("No paired device is nearby right now".into()));
@@ -788,15 +869,25 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                 };
                 match result {
                     Ok(()) => shared.emit(Event::ReceiveDirectory(Some(path))),
-                    Err(error) => shared.emit(Event::Error(format!("could not save receive folder: {error}"))),
+                    Err(error) => shared.emit(Event::Error(format!(
+                        "could not save receive folder: {error}"
+                    ))),
                 }
             }
             Command::SaveDeviceGroup(group) => shared.save_device_group(group),
             Command::ExportRoomBackup { room_id, path } => shared.export_room_backup(room_id, path),
             Command::ImportRoomBackup { path } => shared.import_room_backup(path),
-            Command::CancelTransfers => {
-                shared.cancel_transfers.store(true, Ordering::SeqCst);
-                shared.emit(Event::Info("Cancelling transfers...".into()));
+            Command::CancelTransfer {
+                direction,
+                name,
+                peer,
+            } => {
+                shared
+                    .cancelled_transfers
+                    .lock()
+                    .unwrap()
+                    .insert(transfer_key(direction, &name, &peer));
+                shared.emit(Event::Info(format!("Cancelling {name}...")));
             }
         }
     }
@@ -828,7 +919,12 @@ async fn handle_pairing(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> {
         bail!("pairing code had expired");
     }
     let me = shared.config.lock().unwrap().clone();
-    match timeout(Duration::from_secs(30), pairing::run(stream, &offer.code, &me)).await {
+    match timeout(
+        Duration::from_secs(30),
+        pairing::run(stream, &offer.code, &me),
+    )
+    .await
+    {
         Ok(Ok(peer)) => {
             let name = peer.name.clone();
             shared.add_peer(peer);
@@ -1040,7 +1136,10 @@ async fn handle_room_connection(shared: &Arc<Shared>, stream: TcpStream) -> Resu
         }
     };
     ch.send(&serde_json::to_vec(&manifest)?).await?;
-    shared.emit(Event::Info(format!("{} joined room {}", peer.name, room_id)));
+    shared.emit(Event::Info(format!(
+        "{} joined room {}",
+        peer.name, room_id
+    )));
     Ok(())
 }
 
@@ -1056,14 +1155,15 @@ async fn broadcast_room_delete(
             let mut stream =
                 timeout(Duration::from_secs(5), TcpStream::connect(dest.addr)).await??;
             stream.write_u8(b'R').await?;
-            let mut ch =
-                timeout(Duration::from_secs(10), SecureChannel::initiate(stream, &key)).await??;
-            ch.send(
-                &serde_json::to_vec(&RoomMessage::Delete {
-                    room_id: room_id.clone(),
-                    hash: hash.clone(),
-                })?,
+            let mut ch = timeout(
+                Duration::from_secs(10),
+                SecureChannel::initiate(stream, &key),
             )
+            .await??;
+            ch.send(&serde_json::to_vec(&RoomMessage::Delete {
+                room_id: room_id.clone(),
+                hash: hash.clone(),
+            })?)
             .await?;
             if ch.recv().await? != b"OK" {
                 bail!("member did not confirm deletion");
@@ -1084,10 +1184,18 @@ async fn broadcast_room_sync(shared: Arc<Shared>, targets: Vec<Dest>, room: Room
     for dest in targets {
         let result = async {
             let key = shared.private_key()?;
-            let mut stream = timeout(Duration::from_secs(5), TcpStream::connect(dest.addr)).await??;
+            let mut stream =
+                timeout(Duration::from_secs(5), TcpStream::connect(dest.addr)).await??;
             stream.write_u8(b'R').await?;
-            let mut ch = timeout(Duration::from_secs(10), SecureChannel::initiate(stream, &key)).await??;
-            ch.send(&serde_json::to_vec(&RoomMessage::Sync { room: room.clone() })?).await?;
+            let mut ch = timeout(
+                Duration::from_secs(10),
+                SecureChannel::initiate(stream, &key),
+            )
+            .await??;
+            ch.send(&serde_json::to_vec(&RoomMessage::Sync {
+                room: room.clone(),
+            })?)
+            .await?;
             if ch.recv().await? != b"OK" {
                 bail!("member did not confirm room synchronization");
             }
@@ -1095,7 +1203,10 @@ async fn broadcast_room_sync(shared: Arc<Shared>, targets: Vec<Dest>, room: Room
         }
         .await;
         if let Err(error) = result {
-            shared.emit(Event::Error(format!("room sync to {} failed: {error}", dest.name)));
+            shared.emit(Event::Error(format!(
+                "room sync to {} failed: {error}",
+                dest.name
+            )));
         }
     }
 }
@@ -1113,15 +1224,16 @@ async fn send_room_request(
             let mut stream =
                 timeout(Duration::from_secs(5), TcpStream::connect(dest.addr)).await??;
             stream.write_u8(b'R').await?;
-            let mut ch =
-                timeout(Duration::from_secs(10), SecureChannel::initiate(stream, &key)).await??;
-            ch.send(
-                &serde_json::to_vec(&RoomMessage::Request {
-                    room_id: room_id.clone(),
-                    name: name.clone(),
-                    hash: hash.clone(),
-                })?,
+            let mut ch = timeout(
+                Duration::from_secs(10),
+                SecureChannel::initiate(stream, &key),
             )
+            .await??;
+            ch.send(&serde_json::to_vec(&RoomMessage::Request {
+                room_id: room_id.clone(),
+                name: name.clone(),
+                hash: hash.clone(),
+            })?)
             .await?;
             if ch.recv().await? != b"OK" {
                 bail!("room owner rejected request");
@@ -1148,18 +1260,20 @@ async fn join_room(
     let config = shared.config.lock().unwrap().clone();
     let mut stream = timeout(Duration::from_secs(5), TcpStream::connect(addr)).await??;
     stream.write_u8(b'R').await?;
-    let mut ch = timeout(Duration::from_secs(10), SecureChannel::initiate(stream, &key)).await??;
+    let mut ch = timeout(
+        Duration::from_secs(10),
+        SecureChannel::initiate(stream, &key),
+    )
+    .await??;
     if config.find_peer(&ch.remote_static).is_none() {
         bail!("room owner is not paired");
     }
-    ch.send(
-        &serde_json::to_vec(&RoomMessage::Join {
-            room_id: room_id.to_string(),
-            invite_code: invite_code.to_string(),
-            member_name: config.device_name.clone(),
-            member_public_key: config.public_key.clone(),
-        })?,
-    )
+    ch.send(&serde_json::to_vec(&RoomMessage::Join {
+        room_id: room_id.to_string(),
+        invite_code: invite_code.to_string(),
+        member_name: config.device_name.clone(),
+        member_public_key: config.public_key.clone(),
+    })?)
     .await?;
     let response: RoomMessage = serde_json::from_slice(&ch.recv().await?)?;
     let RoomMessage::Manifest {
@@ -1221,7 +1335,11 @@ async fn join_room(
     let room_id_for_sync = room.id.clone();
     {
         let mut config = shared.config.lock().unwrap();
-        if let Some(existing) = config.rooms.iter_mut().find(|existing| existing.id == room.id) {
+        if let Some(existing) = config
+            .rooms
+            .iter_mut()
+            .find(|existing| existing.id == room.id)
+        {
             *existing = room.clone();
         } else {
             config.rooms.push(room.clone());
@@ -1255,7 +1373,13 @@ fn unique_inbox_path(inbox: &Path, name: &str) -> PathBuf {
         .unwrap_or_default();
     let mut clean: String = base
         .chars()
-        .map(|c| if "<>:\"/\\|?*".contains(c) || c.is_control() { '_' } else { c })
+        .map(|c| {
+            if "<>:\"/\\|?*".contains(c) || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect();
     clean = clean.trim_matches(|c| c == ' ' || c == '.').to_string();
     if clean.is_empty() {
@@ -1271,8 +1395,14 @@ fn unique_inbox_path(inbox: &Path, name: &str) -> PathBuf {
         return first;
     }
     let p = Path::new(&clean);
-    let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-    let ext = p.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    let stem = p
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let ext = p
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
     let mut n = 1;
     loop {
         let candidate = inbox.join(format!("{stem} ({n}){ext}"));
@@ -1361,13 +1491,20 @@ async fn receive_to_file(
     let mut f = if offset == 0 {
         tokio::fs::File::create(path).await?
     } else {
-        tokio::fs::OpenOptions::new().append(true).open(path).await?
+        tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .await?
     };
     let mut left = size.saturating_sub(offset);
     let mut done = offset;
-    let mut last_percent = if size == 0 { 0 } else { ((offset * 100) / size) as u8 };
+    let mut last_percent = if size == 0 {
+        0
+    } else {
+        ((offset * 100) / size) as u8
+    };
     while left > 0 {
-        if shared.cancel_transfers.load(Ordering::SeqCst) {
+        if is_cancelled(shared, TransferDirection::Download, name, peer) {
             bail!("transfer cancelled");
         }
         let chunk = ch.recv().await?;
@@ -1415,15 +1552,29 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
     shared.emit(Event::Info(format!("Connected to {}", peer.name)));
 
     let header: ItemHeader = serde_json::from_slice(&ch.recv().await?)?;
+    clear_cancelled(
+        shared,
+        TransferDirection::Download,
+        &header.name,
+        &peer.name,
+    );
     if header.name.len() > 512 {
         bail!("item name too long");
     }
-    let limit = if header.kind == ItemKind::Text { MAX_TEXT_BYTES } else { MAX_FILE_BYTES };
+    let limit = if header.kind == ItemKind::Text {
+        MAX_TEXT_BYTES
+    } else {
+        MAX_FILE_BYTES
+    };
     if header.size > limit {
         bail!("item from {} is too large", peer.name);
     }
 
-    let duplicate = shared.received_hashes.lock().unwrap().contains(&header.hash);
+    let duplicate = shared
+        .received_hashes
+        .lock()
+        .unwrap()
+        .contains(&header.hash);
     if duplicate {
         ch.send(b"DUPLICATE").await?;
         return Ok(());
@@ -1436,7 +1587,12 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
         let mut done = 0;
         let mut last_percent = 0;
         while left > 0 {
-            if shared.cancel_transfers.load(Ordering::SeqCst) {
+            if is_cancelled(
+                shared,
+                TransferDirection::Download,
+                &header.name,
+                &peer.name,
+            ) {
                 bail!("transfer cancelled");
             }
             let chunk = ch.recv().await?;
@@ -1473,7 +1629,8 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
         } else {
             buf
         };
-        let text = String::from_utf8(text_bytes).map_err(|_| anyhow!("text was not valid UTF-8"))?;
+        let text =
+            String::from_utf8(text_bytes).map_err(|_| anyhow!("text was not valid UTF-8"))?;
         (None, Some(text))
     } else {
         let configured_receive_dir = shared.config.lock().unwrap().receive_dir.clone();
@@ -1506,16 +1663,9 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
         let archive_path = unique_inbox_path(&base, &header.name);
         tokio::fs::rename(&partial, &archive_path).await?;
         let path = if header.compressed {
-            let original_name = header
-                .original_name
-                .as_deref()
-                .unwrap_or(&header.name);
-            let extracted = extract_transfer_archive(
-                &archive_path,
-                &base,
-                original_name,
-                header.folder,
-            )?;
+            let original_name = header.original_name.as_deref().unwrap_or(&header.name);
+            let extracted =
+                extract_transfer_archive(&archive_path, &base, original_name, header.folder)?;
             let _ = std::fs::remove_file(&archive_path);
             extracted
         } else {
@@ -1569,15 +1719,23 @@ async fn push_item<R: AsyncRead + Unpin>(
     mut reader: R,
     label: &str,
 ) -> Result<()> {
+    clear_cancelled(shared, TransferDirection::Upload, label, &dest.name);
     let key = shared.private_key()?;
     let mut stream = timeout(Duration::from_secs(5), TcpStream::connect(dest.addr))
         .await
         .map_err(|_| anyhow!("timed out connecting to {} at {}", dest.name, dest.addr))?
         .with_context(|| format!("could not connect to {} at {}", dest.name, dest.addr))?;
     stream.write_u8(b'T').await?;
-    let mut ch = timeout(Duration::from_secs(10), SecureChannel::initiate(stream, &key)).await??;
+    let mut ch = timeout(
+        Duration::from_secs(10),
+        SecureChannel::initiate(stream, &key),
+    )
+    .await??;
     if ch.remote_static != hex::decode(&dest.pk)? {
-        bail!("{} presented an unexpected identity; not sending", dest.name);
+        bail!(
+            "{} presented an unexpected identity; not sending",
+            dest.name
+        );
     }
 
     ch.send(&serde_json::to_vec(&header)?).await?;
@@ -1612,10 +1770,7 @@ async fn push_item<R: AsyncRead + Unpin>(
         ((offset * 100) / header.size) as u8
     };
     while left > 0 {
-        if shared.cancel_transfers.load(Ordering::SeqCst) {
-            bail!("transfer cancelled");
-        }
-        if shared.cancel_transfers.load(Ordering::SeqCst) {
+        if is_cancelled(shared, TransferDirection::Upload, label, &dest.name) {
             bail!("transfer cancelled");
         }
         let want = std::cmp::min(left, CHUNK as u64) as usize;
@@ -1655,6 +1810,7 @@ async fn send_file(
     room_id: Option<&str>,
     submission: Option<&str>,
 ) -> Result<()> {
+    clear_cancelled(shared, TransferDirection::Upload, label, &dest.name);
     let prepared = prepare_transfer(path, label)?;
     let source_path = prepared.path.clone();
     let meta = tokio::fs::metadata(&source_path)
@@ -1689,10 +1845,12 @@ async fn send_file(
         original_name: Some(prepared.original_name.clone()),
     };
     let mut last_error = None;
-    for attempt in 0..3 {
-        let file = tokio::fs::File::open(&source_path)
-            .await
-            .with_context(|| format!("source file disappeared before sending: {}", path.display()))?;
+    // The receiver keeps the verified prefix in a .part file. Reconnect several
+    // times so a Wi-Fi hiccup only costs a new handshake, not the bytes already sent.
+    for attempt in 0..8 {
+        let file = tokio::fs::File::open(&source_path).await.with_context(|| {
+            format!("source file disappeared before sending: {}", path.display())
+        })?;
         match push_item(shared, dest, header.clone(), file, label).await {
             Ok(()) => {
                 cleanup_transfer(&prepared);
@@ -1704,8 +1862,8 @@ async fn send_file(
                     return Err(e);
                 }
                 last_error = Some(e);
-                if attempt < 2 {
-                    tokio::time::sleep(Duration::from_millis(500)).await;
+                if attempt < 7 {
+                    tokio::time::sleep(Duration::from_millis(500 * (attempt + 1) as u64)).await;
                 }
             }
         }
@@ -1727,7 +1885,10 @@ fn transfer_temp_path(extension: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
-    std::env::temp_dir().join(format!("shelf-transfer-{}-{stamp}.{extension}", std::process::id()))
+    std::env::temp_dir().join(format!(
+        "shelf-transfer-{}-{stamp}.{extension}",
+        std::process::id()
+    ))
 }
 
 fn add_directory_to_zip(
@@ -1739,7 +1900,10 @@ fn add_directory_to_zip(
     for entry in std::fs::read_dir(current)? {
         let entry = entry?;
         let path = entry.path();
-        let relative = path.strip_prefix(root)?.to_string_lossy().replace('\\', "/");
+        let relative = path
+            .strip_prefix(root)?
+            .to_string_lossy()
+            .replace('\\', "/");
         if path.is_dir() {
             zip.add_directory(format!("{relative}/"), options)?;
             add_directory_to_zip(zip, root, &path, options)?;
@@ -1872,9 +2036,9 @@ async fn send_payload(shared: Arc<Shared>, targets: Vec<Dest>, payload: Payload)
                     hash: Sha256::digest(png).into(),
                     room_id: None,
                     submission: None,
-                        compressed: false,
-                        folder: false,
-                        original_name: None,
+                    compressed: false,
+                    folder: false,
+                    original_name: None,
                 };
                 let res = push_item(&shared, &dest, header, &png[..], &label).await;
                 shared.finish_send(&dest.name, label, res);
@@ -1906,7 +2070,9 @@ fn room_targets_except(shared: &Arc<Shared>, room_id: &str, excluded: &str) -> V
         };
         room.members
             .iter()
-            .filter(|member| member.public_key != config.public_key && member.public_key != excluded)
+            .filter(|member| {
+                member.public_key != config.public_key && member.public_key != excluded
+            })
             .map(|member| member.public_key.clone())
             .collect()
     };
@@ -1947,7 +2113,9 @@ async fn send_room_file(
             room.add_file(crate::store::RoomFile {
                 hash: hex::encode(hash),
                 name: label,
-                size: std::fs::metadata(&path).map(|m| m.len()).unwrap_or_default(),
+                size: std::fs::metadata(&path)
+                    .map(|m| m.len())
+                    .unwrap_or_default(),
                 uploaded_by: uploader,
                 uploaded_at: timestamp,
                 submission,

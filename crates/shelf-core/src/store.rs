@@ -221,7 +221,11 @@ impl Room {
         let Some(file) = self.files.iter_mut().find(|file| file.hash == hash) else {
             return false;
         };
-        if file.locked_by.as_deref().is_some_and(|owner| owner != requester) {
+        if file
+            .locked_by
+            .as_deref()
+            .is_some_and(|owner| owner != requester)
+        {
             return false;
         }
         file.locked_by = Some(requester.to_string());
@@ -247,7 +251,12 @@ impl Room {
         true
     }
 
-    pub fn apply_team_update(&mut self, requester: &str, update: &RoomUpdate, now: u64) -> Option<String> {
+    pub fn apply_team_update(
+        &mut self,
+        requester: &str,
+        update: &RoomUpdate,
+        now: u64,
+    ) -> Option<String> {
         let message = match update {
             RoomUpdate::AddAnnouncement { message, pinned } if self.can_edit(requester) => {
                 let message = message.trim();
@@ -266,7 +275,12 @@ impl Room {
             RoomUpdate::SetAnnouncementPinned { id, pinned } if self.can_edit(requester) => {
                 let announcement = self.announcements.iter_mut().find(|item| item.id == *id)?;
                 announcement.pinned = *pinned;
-                if *pinned { "pinned an announcement" } else { "unpinned an announcement" }.to_string()
+                if *pinned {
+                    "pinned an announcement"
+                } else {
+                    "unpinned an announcement"
+                }
+                .to_string()
             }
             RoomUpdate::AddClipboard { content } if self.can_upload(requester) => {
                 let content = content.trim();
@@ -284,7 +298,8 @@ impl Room {
             RoomUpdate::RemoveClipboard { id } if self.can_edit(requester) => {
                 let before = self.clipboard.len();
                 self.clipboard.retain(|item| item.id != *id);
-                (self.clipboard.len() != before).then(|| "removed a shared clipboard entry".to_string())?
+                (self.clipboard.len() != before)
+                    .then(|| "removed a shared clipboard entry".to_string())?
             }
             RoomUpdate::LockFile { hash } if self.lock_file(requester, hash) => {
                 "locked a file".to_string()
@@ -295,12 +310,19 @@ impl Room {
             RoomUpdate::SetMemberRole { public_key, role }
                 if self.can_delete(requester)
                     && *public_key != self.owner_public_key
-                    && self.members.iter_mut().find(|member| member.public_key == *public_key).map(|member| member.role = *role).is_some() =>
+                    && self
+                        .members
+                        .iter_mut()
+                        .find(|member| member.public_key == *public_key)
+                        .map(|member| member.role = *role)
+                        .is_some() =>
             {
                 "changed a member role".to_string()
             }
             RoomUpdate::AddNote { title, body }
-                if self.can_edit(requester) && !title.trim().is_empty() && !body.trim().is_empty() =>
+                if self.can_edit(requester)
+                    && !title.trim().is_empty()
+                    && !body.trim().is_empty() =>
             {
                 self.notes.push(RoomNote {
                     id: format!("note-{}", uuid_like_id()),
@@ -327,11 +349,21 @@ impl Room {
             RoomUpdate::SetFileDownloads { hash, allowed } if self.can_edit(requester) => {
                 let file = self.files.iter_mut().find(|file| file.hash == *hash)?;
                 file.downloads_allowed = *allowed;
-                if *allowed { "allowed file downloads" } else { "restricted file downloads" }.to_string()
+                if *allowed {
+                    "allowed file downloads"
+                } else {
+                    "restricted file downloads"
+                }
+                .to_string()
             }
             RoomUpdate::SetSessionExpiration { expires_at } if self.can_delete(requester) => {
                 self.session_expires_at = *expires_at;
-                if expires_at.is_some() { "set a room expiration" } else { "removed room expiration" }.to_string()
+                if expires_at.is_some() {
+                    "set a room expiration"
+                } else {
+                    "removed room expiration"
+                }
+                .to_string()
             }
             _ => return None,
         };
@@ -713,7 +745,11 @@ mod tests {
             downloads_allowed: true,
             locked_by: None,
         }));
-        let latest = room.files.iter().find(|file| file.hash == "new-hash").unwrap();
+        let latest = room
+            .files
+            .iter()
+            .find(|file| file.hash == "new-hash")
+            .unwrap();
         assert_eq!(latest.version, 2);
         assert_eq!(latest.previous_hash.as_deref(), Some("abc"));
     }

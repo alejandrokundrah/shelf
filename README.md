@@ -23,6 +23,7 @@ network connection.
   French, Spanish, or German, with English fallback.
 - Windows tray/shortcut-friendly installer workflow.
 - Tray icon: left-click to open the shelf, right-click for Show Shelf / Quit Shelf.
+- Global shortcuts: Ctrl+Shift+S toggles the shelf; Ctrl+Shift+C sends the current clipboard to the selected device.
 - Choose the left or right screen edge, and which monitor, under Send to.
 - Choose the look under Style: the macOS glass style or Material 3 (tonal buttons, filter
   chips, Material switches and surface-container cards). Both follow the system light/dark setting.

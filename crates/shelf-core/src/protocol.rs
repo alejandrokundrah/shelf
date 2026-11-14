@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::store::{Room, RoomUpdate};
+use serde::{Deserialize, Serialize};
 
 /// Plaintext bytes per encrypted frame (Noise limit is 65535 including the 16 byte tag).
 pub const CHUNK: usize = 60_000;

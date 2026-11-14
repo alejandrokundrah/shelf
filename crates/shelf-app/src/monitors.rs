@@ -22,7 +22,12 @@ type MonitorEnumProc = unsafe extern "system" fn(isize, isize, *mut Rect, isize)
 
 #[link(name = "user32")]
 extern "system" {
-    fn EnumDisplayMonitors(hdc: isize, clip: *const Rect, proc_: MonitorEnumProc, data: isize) -> i32;
+    fn EnumDisplayMonitors(
+        hdc: isize,
+        clip: *const Rect,
+        proc_: MonitorEnumProc,
+        data: isize,
+    ) -> i32;
     fn GetMonitorInfoW(monitor: isize, info: *mut MonitorInfo) -> i32;
 }
 
@@ -37,7 +42,12 @@ pub struct Monitor {
     pub primary: bool,
 }
 
-unsafe extern "system" fn collect(monitor: isize, _hdc: isize, _rect: *mut Rect, data: isize) -> i32 {
+unsafe extern "system" fn collect(
+    monitor: isize,
+    _hdc: isize,
+    _rect: *mut Rect,
+    data: isize,
+) -> i32 {
     let list = &mut *(data as *mut Vec<Monitor>);
     let mut info = MonitorInfo {
         cb_size: std::mem::size_of::<MonitorInfo>() as u32,
@@ -63,8 +73,17 @@ pub fn list() -> Vec<Monitor> {
     let mut found: Vec<Monitor> = Vec::new();
     // SAFETY: `collect` only runs during this call and `found` outlives it.
     unsafe {
-        EnumDisplayMonitors(0, std::ptr::null(), collect, &mut found as *mut Vec<Monitor> as isize);
+        EnumDisplayMonitors(
+            0,
+            std::ptr::null(),
+            collect,
+            &mut found as *mut Vec<Monitor> as isize,
+        );
     }
-    found.sort_by(|a, b| a.left.partial_cmp(&b.left).unwrap_or(std::cmp::Ordering::Equal));
+    found.sort_by(|a, b| {
+        a.left
+            .partial_cmp(&b.left)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     found
 }

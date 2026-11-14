@@ -7,11 +7,16 @@ use eframe::egui::{
     self, pos2, vec2, Align, Align2, Color32, FontFamily, FontId, Layout, Pos2, Rect, RichText,
     Rounding, Stroke, Vec2,
 };
+use global_hotkey::{
+    hotkey::{Code, HotKey, Modifiers},
+    GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
+};
 use shelf_core::{
     Command, DeviceGroup, Event, Handle, ItemKind, NearbyDevice, Payload, PeerStatus, ReceivedItem,
     Room, RoomRole, RoomUpdate, Target, TransferDirection,
 };
 use std::cell::Cell;
+use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -52,12 +57,26 @@ impl Settings {
     }
 
     fn load() -> Settings {
-        let mut s = Settings { side: Side::Right, monitor: usize::MAX, auto_copy: true, pinned: false, material: false };
+        let mut s = Settings {
+            side: Side::Right,
+            monitor: usize::MAX,
+            auto_copy: true,
+            pinned: false,
+            material: false,
+        };
         if let Ok(text) = std::fs::read_to_string(Self::path()) {
             for line in text.lines() {
-                let Some((k, v)) = line.split_once('=') else { continue };
+                let Some((k, v)) = line.split_once('=') else {
+                    continue;
+                };
                 match k.trim() {
-                    "side" => s.side = if v.trim() == "left" { Side::Left } else { Side::Right },
+                    "side" => {
+                        s.side = if v.trim() == "left" {
+                            Side::Left
+                        } else {
+                            Side::Right
+                        }
+                    }
                     "monitor" => s.monitor = v.trim().parse().unwrap_or(usize::MAX),
                     "auto_copy" => s.auto_copy = v.trim() != "0",
                     "pinned" => s.pinned = v.trim() == "1",
@@ -72,8 +91,16 @@ impl Settings {
     fn save(&self) {
         let text = format!(
             "side={}\nmonitor={}\nauto_copy={}\npinned={}\nstyle={}\n",
-            if self.side == Side::Left { "left" } else { "right" },
-            if self.monitor == usize::MAX { -1 } else { self.monitor as i64 },
+            if self.side == Side::Left {
+                "left"
+            } else {
+                "right"
+            },
+            if self.monitor == usize::MAX {
+                -1
+            } else {
+                self.monitor as i64
+            },
             if self.auto_copy { 1 } else { 0 },
             if self.pinned { 1 } else { 0 },
             if self.material { "material" } else { "macos" },
@@ -125,6 +152,15 @@ fn build_tray(ctx: &egui::Context) -> Option<TrayIcon> {
         .with_icon(icon)
         .build()
         .ok()
+}
+
+fn register_hotkeys() -> Option<(GlobalHotKeyManager, u32, u32)> {
+    let manager = GlobalHotKeyManager::new().ok()?;
+    let toggle = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyS);
+    let send_clipboard = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyC);
+    manager.register(toggle).ok()?;
+    manager.register(send_clipboard).ok()?;
+    Some((manager, toggle.id(), send_clipboard.id()))
 }
 
 #[derive(Clone, Copy)]
@@ -391,23 +427,23 @@ impl Pal {
             dark: true,
             m3: true,
             on_accent: Color32::from_rgb(0, 50, 88),
-            panel: Color32::from_rgb(29, 32, 36),            // surface container
+            panel: Color32::from_rgb(29, 32, 36), // surface container
             panel_edge: Color32::TRANSPARENT,
-            card: Color32::from_rgb(39, 42, 47),             // surface container high
+            card: Color32::from_rgb(39, 42, 47), // surface container high
             card_edge: Color32::TRANSPARENT,
-            field: Color32::from_rgb(50, 53, 58),            // surface container highest
-            text: Color32::from_rgb(226, 226, 230),          // on surface
-            text2: Color32::from_rgb(195, 199, 207),         // on surface variant
-            text3: Color32::from_rgb(141, 145, 153),         // outline
-            accent: Color32::from_rgb(159, 202, 255),        // primary
+            field: Color32::from_rgb(50, 53, 58), // surface container highest
+            text: Color32::from_rgb(226, 226, 230), // on surface
+            text2: Color32::from_rgb(195, 199, 207), // on surface variant
+            text3: Color32::from_rgb(141, 145, 153), // outline
+            accent: Color32::from_rgb(159, 202, 255), // primary
             good: Color32::from_rgb(109, 213, 140),
-            red: Color32::from_rgb(255, 180, 171),           // error
+            red: Color32::from_rgb(255, 180, 171), // error
             orange: Color32::from_rgb(255, 183, 77),
             purple: Color32::from_rgb(214, 186, 255),
-            sep: Color32::from_rgb(67, 71, 78),              // outline variant
-            fill: Color32::from_rgb(59, 72, 88),             // secondary container
-            fill_hover: Color32::from_rgb(72, 84, 101),      // + 8% state layer
-            fill_press: Color32::from_rgb(78, 91, 107),      // + 12% state layer
+            sep: Color32::from_rgb(67, 71, 78),  // outline variant
+            fill: Color32::from_rgb(59, 72, 88), // secondary container
+            fill_hover: Color32::from_rgb(72, 84, 101), // + 8% state layer
+            fill_press: Color32::from_rgb(78, 91, 107), // + 12% state layer
         }
     }
 
@@ -439,11 +475,19 @@ impl Pal {
 }
 
 fn panel_radius() -> f32 {
-    if pal().m3 { 28.0 } else { PANEL_RADIUS }
+    if pal().m3 {
+        28.0
+    } else {
+        PANEL_RADIUS
+    }
 }
 
 fn card_radius() -> f32 {
-    if pal().m3 { 16.0 } else { CARD_RADIUS }
+    if pal().m3 {
+        16.0
+    } else {
+        CARD_RADIUS
+    }
 }
 
 thread_local! {
@@ -516,12 +560,98 @@ fn load_logo(ctx: &egui::Context) -> Option<egui::TextureHandle> {
     Some(ctx.load_texture("shelf-logo", image, egui::TextureOptions::LINEAR))
 }
 
-fn main() -> eframe::Result<()> {
-    // Only one Shelf per PC: starting it a second time just exits quietly.
-    let _single_instance = match std::net::TcpListener::bind("127.0.0.1:47831") {
-        Ok(l) => l,
-        Err(_) => return Ok(()),
+fn pdf_preview(ctx: &egui::Context, id: u64) -> egui::TextureHandle {
+    const W: usize = 96;
+    const H: usize = 124;
+    let mut rgba = vec![0u8; W * H * 4];
+    for pixel in rgba.chunks_exact_mut(4) {
+        pixel.copy_from_slice(&[248, 248, 250, 255]);
+    }
+    let fill = |rgba: &mut [u8], x0: usize, y0: usize, x1: usize, y1: usize, color: [u8; 4]| {
+        for y in y0..y1.min(H) {
+            for x in x0..x1.min(W) {
+                rgba[(y * W + x) * 4..(y * W + x) * 4 + 4].copy_from_slice(&color);
+            }
+        }
     };
+    fill(&mut rgba, 8, 8, W - 8, H - 8, [255, 255, 255, 255]);
+    fill(&mut rgba, 8, 8, W - 8, 35, [211, 47, 47, 255]);
+    fill(&mut rgba, 20, 52, W - 20, 56, [190, 190, 198, 255]);
+    fill(&mut rgba, 20, 64, W - 14, 68, [215, 215, 220, 255]);
+    fill(&mut rgba, 20, 76, W - 26, 80, [215, 215, 220, 255]);
+    fill(&mut rgba, 20, 88, W - 18, 92, [215, 215, 220, 255]);
+    ctx.load_texture(
+        format!("pdf-preview-{id}"),
+        egui::ColorImage::from_rgba_unmultiplied([W, H], &rgba),
+        egui::TextureOptions::LINEAR,
+    )
+}
+
+fn load_item_preview(ctx: &egui::Context, item: &ReceivedItem) -> Option<egui::TextureHandle> {
+    let path = item.path.as_deref()?;
+    if item.kind == ItemKind::Image {
+        let image = image::ImageReader::open(path).ok()?.decode().ok()?;
+        let thumb = image.thumbnail(128, 96).to_rgba8();
+        let size = [thumb.width() as usize, thumb.height() as usize];
+        return Some(ctx.load_texture(
+            format!("item-preview-{}", item.id),
+            egui::ColorImage::from_rgba_unmultiplied(size, thumb.as_raw()),
+            egui::TextureOptions::LINEAR,
+        ));
+    }
+    if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("pdf")) {
+        return Some(pdf_preview(ctx, item.id));
+    }
+    None
+}
+
+fn send_to_running_instance(paths: &[PathBuf]) -> bool {
+    for _ in 0..10 {
+        if let Ok(mut stream) = std::net::TcpStream::connect("127.0.0.1:47831") {
+            let _ = stream.write_all(b"SHELF_SEND\n");
+            for path in paths {
+                let _ = stream.write_all(path.to_string_lossy().as_bytes());
+                let _ = stream.write_all(b"\n");
+            }
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
+fn main() -> eframe::Result<()> {
+    let mut args = std::env::args_os().skip(1);
+    let send_paths: Vec<PathBuf> = if args.next().as_deref() == Some(std::ffi::OsStr::new("--send")) {
+        args.map(PathBuf::from).filter(|path| path.exists()).collect()
+    } else {
+        Vec::new()
+    };
+
+    // Explorer invokes a new process for a shell verb. Forward its paths to the
+    // already-running Shelf instance instead of starting a second engine.
+    let single_instance = match std::net::TcpListener::bind("127.0.0.1:47831") {
+        Ok(listener) => listener,
+        Err(_) => {
+            if !send_paths.is_empty() {
+                let _ = send_to_running_instance(&send_paths);
+            }
+            return Ok(());
+        }
+    };
+    let (control_tx, control_rx) = channel();
+    std::thread::spawn(move || {
+        for stream in single_instance.incoming().flatten() {
+            let mut input = String::new();
+            if stream.take(1024 * 1024).read_to_string(&mut input).is_ok() {
+                let mut lines = input.lines();
+                if lines.next() == Some("SHELF_SEND") {
+                    let paths = lines.map(PathBuf::from).filter(|path| path.exists()).collect();
+                    let _ = control_tx.send(paths);
+                }
+            }
+        }
+    });
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Shelf")
@@ -541,7 +671,13 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Shelf",
         options,
-        Box::new(|cc| Ok(Box::new(ShelfApp::new(cc)))),
+        Box::new(move |cc| {
+            let mut app = ShelfApp::new(cc, control_rx);
+            if !send_paths.is_empty() {
+                app.send_paths(send_paths.clone());
+            }
+            Ok(Box::new(app))
+        }),
     )
 }
 
@@ -558,23 +694,32 @@ fn sb_font(size: f32) -> FontId {
 }
 
 fn semibold(text: impl Into<String>, size: f32) -> RichText {
-    RichText::new(text.into()).size(size).family(semibold_family())
+    RichText::new(text.into())
+        .size(size)
+        .family(semibold_family())
 }
 
 fn install_fonts(ctx: &egui::Context) {
     // Segoe UI Variable (Windows 11) is the closest thing to San Francisco; fall back to Segoe UI.
     let mut fonts = egui::FontDefinitions::default();
-    let regular = ["C:\\Windows\\Fonts\\SegUIVar.ttf", "C:\\Windows\\Fonts\\segoeui.ttf"]
-        .iter()
-        .find_map(|p| std::fs::read(p).ok());
-    let bold = ["C:\\Windows\\Fonts\\seguisb.ttf", "C:\\Windows\\Fonts\\segoeuib.ttf"]
-        .iter()
-        .find_map(|p| std::fs::read(p).ok());
+    let regular = [
+        "C:\\Windows\\Fonts\\SegUIVar.ttf",
+        "C:\\Windows\\Fonts\\segoeui.ttf",
+    ]
+    .iter()
+    .find_map(|p| std::fs::read(p).ok());
+    let bold = [
+        "C:\\Windows\\Fonts\\seguisb.ttf",
+        "C:\\Windows\\Fonts\\segoeuib.ttf",
+    ]
+    .iter()
+    .find_map(|p| std::fs::read(p).ok());
 
     if let Some(bytes) = regular {
-        fonts
-            .font_data
-            .insert("system-ui".to_owned(), egui::FontData::from_owned(bytes).into());
+        fonts.font_data.insert(
+            "system-ui".to_owned(),
+            egui::FontData::from_owned(bytes).into(),
+        );
         fonts
             .families
             .entry(FontFamily::Proportional)
@@ -583,13 +728,20 @@ fn install_fonts(ctx: &egui::Context) {
     }
     let mut semi: Vec<String> = Vec::new();
     if let Some(bytes) = bold {
-        fonts
-            .font_data
-            .insert("system-ui-semibold".to_owned(), egui::FontData::from_owned(bytes).into());
+        fonts.font_data.insert(
+            "system-ui-semibold".to_owned(),
+            egui::FontData::from_owned(bytes).into(),
+        );
         semi.push("system-ui-semibold".to_owned());
     }
     // Always end with the regular proportional stack so every glyph still resolves.
-    semi.extend(fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default());
+    semi.extend(
+        fonts
+            .families
+            .get(&FontFamily::Proportional)
+            .cloned()
+            .unwrap_or_default(),
+    );
     fonts.families.insert(semibold_family(), semi);
     ctx.set_fonts(fonts);
 }
@@ -610,7 +762,11 @@ fn apply_style(ctx: &egui::Context, p: Pal) {
     style.spacing.interact_size.y = 26.0;
     style.spacing.scroll = egui::style::ScrollStyle::floating();
 
-    style.visuals = if p.dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+    style.visuals = if p.dark {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
     let v = &mut style.visuals;
     let r = Rounding::same(if p.m3 { 8.0 } else { 10.0 });
     v.panel_fill = Color32::TRANSPARENT;
@@ -726,11 +882,22 @@ fn glass_circle(ui: &mut egui::Ui, active: bool) -> (Rect, egui::Response) {
     let p = pal();
     if p.m3 {
         let (rect, resp) = ui.allocate_exact_size(vec2(36.0, 36.0), egui::Sense::click());
-        let base = if active { p.accent } else { Color32::TRANSPARENT };
-        let layer = if resp.is_pointer_button_down_on() { 0.12 } else if resp.hovered() { 0.08 } else { 0.0 };
+        let base = if active {
+            p.accent
+        } else {
+            Color32::TRANSPARENT
+        };
+        let layer = if resp.is_pointer_button_down_on() {
+            0.12
+        } else if resp.hovered() {
+            0.08
+        } else {
+            0.0
+        };
         let on = if active { p.on_accent } else { p.text2 };
         ui.painter().circle_filled(rect.center(), 18.0, base);
-        ui.painter().circle_filled(rect.center(), 18.0, on.gamma_multiply(layer));
+        ui.painter()
+            .circle_filled(rect.center(), 18.0, on.gamma_multiply(layer));
         return (rect, resp.on_hover_cursor(egui::CursorIcon::PointingHand));
     }
     let (rect, resp) = ui.allocate_exact_size(vec2(30.0, 30.0), egui::Sense::click());
@@ -750,10 +917,16 @@ fn glass_circle(ui: &mut egui::Ui, active: bool) -> (Rect, egui::Response) {
 fn close_button(ui: &mut egui::Ui) -> egui::Response {
     let (rect, resp) = glass_circle(ui, false);
     let c = rect.center();
-    let col = if resp.hovered() { pal().text } else { pal().text2 };
+    let col = if resp.hovered() {
+        pal().text
+    } else {
+        pal().text2
+    };
     let s = Stroke::new(1.6_f32, col);
-    ui.painter().line_segment([c + vec2(-4.0, -4.0), c + vec2(4.0, 4.0)], s);
-    ui.painter().line_segment([c + vec2(4.0, -4.0), c + vec2(-4.0, 4.0)], s);
+    ui.painter()
+        .line_segment([c + vec2(-4.0, -4.0), c + vec2(4.0, 4.0)], s);
+    ui.painter()
+        .line_segment([c + vec2(4.0, -4.0), c + vec2(-4.0, 4.0)], s);
     resp.on_hover_text("Quit Shelf")
 }
 
@@ -763,10 +936,18 @@ fn pin_button(ui: &mut egui::Ui, pinned: &mut bool) -> egui::Response {
         *pinned = !*pinned;
     }
     let c = rect.center();
-    let col = if *pinned { pal().on_accent } else { pal().text2 };
+    let col = if *pinned {
+        pal().on_accent
+    } else {
+        pal().text2
+    };
     let s = Stroke::new(1.5_f32, col);
     let p = ui.painter();
-    p.rect_stroke(Rect::from_center_size(c + vec2(0.0, -3.5), vec2(6.0, 8.0)), 2.0, s);
+    p.rect_stroke(
+        Rect::from_center_size(c + vec2(0.0, -3.5), vec2(6.0, 8.0)),
+        2.0,
+        s,
+    );
     p.line_segment([c + vec2(-5.0, 1.5), c + vec2(5.0, 1.5)], s);
     p.line_segment([c + vec2(0.0, 1.5), c + vec2(0.0, 7.0)], s);
     resp.on_hover_text(if *pinned { "Pinned open" } else { "Keep open" })
@@ -796,7 +977,15 @@ fn m3_switch(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     // Hover/press state layer around the thumb.
     if resp.is_pointer_button_down_on() || resp.hovered() {
         let layer = if on_state(t) { p.accent } else { p.text };
-        painter.circle_filled(center, 20.0, layer.gamma_multiply(if resp.is_pointer_button_down_on() { 0.12 } else { 0.08 }));
+        painter.circle_filled(
+            center,
+            20.0,
+            layer.gamma_multiply(if resp.is_pointer_button_down_on() {
+                0.12
+            } else {
+                0.08
+            }),
+        );
     }
     painter.circle_filled(center, radius, thumb);
     if t > 0.5 {
@@ -828,12 +1017,20 @@ fn mac_switch(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
         resp.mark_changed();
     }
     let t = ui.ctx().animate_bool_responsive(resp.id, *on);
-    let off_track = if p.dark { Color32::from_rgb(78, 78, 84) } else { Color32::from_rgb(214, 214, 220) };
+    let off_track = if p.dark {
+        Color32::from_rgb(78, 78, 84)
+    } else {
+        Color32::from_rgb(214, 214, 220)
+    };
     let track = off_track.lerp_to_gamma(p.good, t);
     let x = egui::lerp((rect.left() + 12.5)..=(rect.right() - 12.5), t);
     let painter = ui.painter();
     painter.rect_filled(rect, 12.5, track);
-    painter.circle_filled(Pos2::new(x, rect.center().y + 1.0), 10.5, Color32::from_black_alpha(46));
+    painter.circle_filled(
+        Pos2::new(x, rect.center().y + 1.0),
+        10.5,
+        Color32::from_black_alpha(46),
+    );
     painter.circle_filled(Pos2::new(x, rect.center().y), 10.5, Color32::WHITE);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -873,11 +1070,17 @@ fn m3_button(
     let font = sb_font(if height >= 34.0 { 14.0 } else { 12.5 });
     let is_chip = matches!(look, Look::Chip(_));
     let selected = matches!(look, Look::Chip(true));
-    let galley = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), Color32::WHITE);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), font.clone(), Color32::WHITE);
     let check_w = if selected { 18.0 } else { 0.0 };
     let pad = if is_chip { 12.0 } else { height * 0.6 };
     let w = width.unwrap_or(galley.size().x + check_w + pad * 2.0);
-    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
     let (rect, resp) = ui.allocate_exact_size(vec2(w, height), sense);
     let down = enabled && resp.is_pointer_button_down_on();
     let hot = enabled && resp.hovered();
@@ -914,8 +1117,18 @@ fn m3_button(
         painter.line_segment([c + vec2(-4.0, 0.0), c + vec2(-1.2, 3.0)], s);
         painter.line_segment([c + vec2(-1.2, 3.0), c + vec2(4.5, -3.2)], s);
     }
-    painter.text(Pos2::new(start_x + check_w, cy), Align2::LEFT_CENTER, label, font, fg);
-    if enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp }
+    painter.text(
+        Pos2::new(start_x + check_w, cy),
+        Align2::LEFT_CENTER,
+        label,
+        font,
+        fg,
+    );
+    if enabled {
+        resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    } else {
+        resp
+    }
 }
 
 /// Capsule button. `width` of `None` hugs the label.
@@ -937,19 +1150,40 @@ fn capsule(
         other => other,
     };
     let font = sb_font(if height >= 34.0 { 14.0 } else { 12.0 });
-    let galley = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), Color32::WHITE);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), font.clone(), Color32::WHITE);
     let w = width.unwrap_or(galley.size().x + height * 0.95);
-    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
     let (rect, resp) = ui.allocate_exact_size(vec2(w, height), sense);
     let down = enabled && resp.is_pointer_button_down_on();
     let hot = enabled && resp.hovered();
     let (mut fill, fg) = match look {
         Look::Primary => (p.accent, Color32::WHITE),
         Look::Glass => (
-            if down { p.fill_press } else if hot { p.fill_hover } else { p.fill },
+            if down {
+                p.fill_press
+            } else if hot {
+                p.fill_hover
+            } else {
+                p.fill
+            },
             p.text,
         ),
-        Look::Tint(c) => (c.gamma_multiply(if down { 0.34 } else if hot { 0.26 } else { 0.16 }), c),
+        Look::Tint(c) => (
+            c.gamma_multiply(if down {
+                0.34
+            } else if hot {
+                0.26
+            } else {
+                0.16
+            }),
+            c,
+        ),
         Look::Chip(_) => (p.fill, p.text), // already mapped to Primary/Glass above
     };
     if let Look::Primary = look {
@@ -959,17 +1193,30 @@ fn capsule(
             fill = fill.lerp_to_gamma(Color32::WHITE, 0.14);
         }
     }
-    let (fill, fg) = if enabled { (fill, fg) } else { (fill.gamma_multiply(0.45), fg.gamma_multiply(0.55)) };
+    let (fill, fg) = if enabled {
+        (fill, fg)
+    } else {
+        (fill.gamma_multiply(0.45), fg.gamma_multiply(0.55))
+    };
     ui.painter().rect_filled(rect, rect.height() / 2.0, fill);
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, label, font, fg);
-    if enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp }
+    ui.painter()
+        .text(rect.center(), Align2::CENTER_CENTER, label, font, fg);
+    if enabled {
+        resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    } else {
+        resp
+    }
 }
 
 fn thin_progress(ui: &mut egui::Ui, frac: f32) {
     let p = pal();
     let h = if p.m3 { 4.0 } else { 5.0 };
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), egui::Sense::hover());
-    let track = if p.m3 { p.text3.gamma_multiply(0.35) } else { p.fill };
+    let track = if p.m3 {
+        p.text3.gamma_multiply(0.35)
+    } else {
+        p.fill
+    };
     ui.painter().rect_filled(rect, h / 2.0, track);
     let mut fill = rect;
     fill.set_width(rect.width() * frac.clamp(0.0, 1.0));
@@ -1006,7 +1253,9 @@ fn arrow_tray(painter: &egui::Painter, c: Pos2, color: Color32) {
 
 fn drop_zone(ui: &mut egui::Ui, hovering: bool) {
     let p = pal();
-    let t = ui.ctx().animate_bool_responsive(egui::Id::new("drop_zone_hover"), hovering);
+    let t = ui
+        .ctx()
+        .animate_bool_responsive(egui::Id::new("drop_zone_hover"), hovering);
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 128.0), egui::Sense::hover());
     let fill = p.card.lerp_to_gamma(p.accent.gamma_multiply(0.16), t);
     let line = p.text3.gamma_multiply(0.7).lerp_to_gamma(p.accent, t);
@@ -1014,7 +1263,12 @@ fn drop_zone(ui: &mut egui::Ui, hovering: bool) {
     let rad = if p.m3 { 28.0 } else { 22.0 };
     painter.rect_filled(rect, rad, fill);
     let path = rounded_rect_path(rect.shrink(1.0), rad);
-    painter.extend(egui::Shape::dashed_line(&path, Stroke::new(1.4_f32, line), 7.0, 6.0));
+    painter.extend(egui::Shape::dashed_line(
+        &path,
+        Stroke::new(1.4_f32, line),
+        7.0,
+        6.0,
+    ));
 
     let c = rect.center() + vec2(0.0, -22.0);
     let badge = p.accent.gamma_multiply(0.16 + 0.14 * t);
@@ -1028,7 +1282,11 @@ fn drop_zone(ui: &mut egui::Ui, hovering: bool) {
     painter.text(
         rect.center() + vec2(0.0, 17.0),
         Align2::CENTER_CENTER,
-        if hovering { "Release to send" } else { "Drop to send" },
+        if hovering {
+            "Release to send"
+        } else {
+            "Drop to send"
+        },
         sb_font(15.0),
         if hovering { p.accent } else { p.text },
     );
@@ -1050,7 +1308,11 @@ fn draw_kind_icon(painter: &egui::Painter, rect: Rect, kind: &ItemKind) {
     };
     // Material 3: flat tonal tile with a dark glyph. macOS: glossy tile with a white glyph.
     let glyph = if p.m3 {
-        let tile = if p.dark { color.gamma_multiply(0.28) } else { color.gamma_multiply(0.18) };
+        let tile = if p.dark {
+            color.gamma_multiply(0.28)
+        } else {
+            color.gamma_multiply(0.18)
+        };
         painter.rect_filled(rect, 14.0, tile);
         color
     } else {
@@ -1059,7 +1321,12 @@ fn draw_kind_icon(painter: &egui::Painter, rect: Rect, kind: &ItemKind) {
         let sheen = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.center().y));
         painter.rect_filled(
             sheen,
-            Rounding { nw: 12.0, ne: 12.0, sw: 0.0, se: 0.0 },
+            Rounding {
+                nw: 12.0,
+                ne: 12.0,
+                sw: 0.0,
+                se: 0.0,
+            },
             Color32::from_white_alpha(22),
         );
         Color32::WHITE
@@ -1081,7 +1348,13 @@ fn draw_kind_icon(painter: &egui::Painter, rect: Rect, kind: &ItemKind) {
             painter.rect_stroke(Rect::from_center_size(c, vec2(20.0, 15.0)), 3.5, s);
             painter.circle_filled(c + vec2(-4.0, -2.0), 1.9, glyph);
             painter.add(egui::Shape::line(
-                vec![c + vec2(-8.0, 5.5), c + vec2(-2.0, 0.5), c + vec2(1.5, 3.5), c + vec2(4.5, 0.5), c + vec2(8.0, 5.0)],
+                vec![
+                    c + vec2(-8.0, 5.5),
+                    c + vec2(-2.0, 0.5),
+                    c + vec2(1.5, 3.5),
+                    c + vec2(4.5, 0.5),
+                    c + vec2(8.0, 5.0),
+                ],
                 s,
             ));
         }
@@ -1095,7 +1368,11 @@ fn draw_device_icon(painter: &egui::Painter, rect: Rect, online: bool) {
     painter.circle_filled(c, rect.width() / 2.0, p.fill);
     let col = if online { p.text } else { p.text3 };
     let s = Stroke::new(1.5_f32, col);
-    painter.rect_stroke(Rect::from_center_size(c + vec2(0.0, -1.5), vec2(15.0, 10.0)), 2.5, s);
+    painter.rect_stroke(
+        Rect::from_center_size(c + vec2(0.0, -1.5), vec2(15.0, 10.0)),
+        2.5,
+        s,
+    );
     painter.line_segment([c + vec2(-4.0, 7.0), c + vec2(4.0, 7.0)], s);
     let badge = c + vec2(9.5, 9.5);
     let ring = if p.m3 {
@@ -1120,12 +1397,20 @@ fn code_tiles(ui: &mut egui::Ui, code: &str) {
     for i in 0..6 {
         let x = rect.left() + i as f32 * (tile_w + gap);
         let r = Rect::from_min_size(Pos2::new(x, rect.top()), vec2(tile_w, rect.height()));
-        ui.painter().rect_filled(r, if p.m3 { 12.0 } else { 14.0 }, p.fill);
+        ui.painter()
+            .rect_filled(r, if p.m3 { 12.0 } else { 14.0 }, p.fill);
         if p.m3 {
-            ui.painter().rect_stroke(r, 12.0, Stroke::new(1.0_f32, p.text3));
+            ui.painter()
+                .rect_stroke(r, 12.0, Stroke::new(1.0_f32, p.text3));
         }
         if let Some(d) = digits.get(i) {
-            ui.painter().text(r.center(), Align2::CENTER_CENTER, d.to_string(), sb_font(28.0), p.text);
+            ui.painter().text(
+                r.center(),
+                Align2::CENTER_CENTER,
+                d.to_string(),
+                sb_font(28.0),
+                p.text,
+            );
         }
     }
 }
@@ -1137,6 +1422,7 @@ fn code_tiles(ui: &mut egui::Ui, code: &str) {
 struct ShelfItem {
     item: ReceivedItem,
     received: Instant,
+    preview: Option<egui::TextureHandle>,
 }
 
 struct PairDialog {
@@ -1176,13 +1462,22 @@ fn m3_receive_notch(ui: &mut egui::Ui, receiving: Option<&Receiving>) {
         return;
     }
     const H: f32 = 56.0;
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), H * open), egui::Sense::hover());
+    let (rect, _) =
+        ui.allocate_exact_size(vec2(ui.available_width(), H * open), egui::Sense::hover());
     let full = Rect::from_min_size(rect.min, vec2(rect.width(), H));
     let painter = ui.painter().with_clip_rect(rect);
     let (bg, fg, arc) = if p.dark {
-        (Color32::from_rgb(230, 225, 229), Color32::from_rgb(49, 48, 51), p.accent)
+        (
+            Color32::from_rgb(230, 225, 229),
+            Color32::from_rgb(49, 48, 51),
+            p.accent,
+        )
     } else {
-        (Color32::from_rgb(49, 48, 51), Color32::from_rgb(244, 239, 244), p.accent.lerp_to_gamma(Color32::WHITE, 0.45))
+        (
+            Color32::from_rgb(49, 48, 51),
+            Color32::from_rgb(244, 239, 244),
+            p.accent.lerp_to_gamma(Color32::WHITE, 0.45),
+        )
     };
     painter.rect_filled(full, 28.0, bg);
 
@@ -1192,7 +1487,10 @@ fn m3_receive_notch(ui: &mut egui::Ui, receiving: Option<&Receiving>) {
     painter.circle_stroke(c, radius, Stroke::new(3.0_f32, fg.gamma_multiply(0.22)));
     let t = ui.input(|i| i.time) as f32;
     let (start, sweep) = match r.frac {
-        Some(f) => (-std::f32::consts::FRAC_PI_2, f.clamp(0.0, 1.0) * std::f32::consts::TAU),
+        Some(f) => (
+            -std::f32::consts::FRAC_PI_2,
+            f.clamp(0.0, 1.0) * std::f32::consts::TAU,
+        ),
         None => (t * 4.0, 1.7 + 0.8 * (t * 2.5).sin()),
     };
     let steps = ((sweep / std::f32::consts::TAU) * 64.0).ceil().max(2.0) as usize;
@@ -1217,7 +1515,11 @@ fn m3_receive_notch(ui: &mut egui::Ui, receiving: Option<&Receiving>) {
         fg,
     );
     let detail = if r.speed > 0.0 {
-        format!("{}/s · from {}", human_size(r.speed as u64), shorten(&r.peer, 16))
+        format!(
+            "{}/s · from {}",
+            human_size(r.speed as u64),
+            shorten(&r.peer, 16)
+        )
     } else {
         format!("from {}", shorten(&r.peer, 16))
     };
@@ -1265,14 +1567,30 @@ enum Action {
     Reveal(usize),
     Remove(usize),
     ClearAll,
-    CancelTransfers,
+    CancelTransfer {
+        direction: TransferDirection,
+        name: String,
+        peer: String,
+    },
     CreateRoom,
     JoinRoom(SocketAddr),
-    DeleteRoomFile { room_id: String, hash: String },
-    RequestRoomFile { room_id: String },
-    SubmitRoomFile { room_id: String },
-    CreateAssignment { room_id: String },
-    UpdateRoom { room_id: String, update: RoomUpdate },
+    DeleteRoomFile {
+        room_id: String,
+        hash: String,
+    },
+    RequestRoomFile {
+        room_id: String,
+    },
+    SubmitRoomFile {
+        room_id: String,
+    },
+    CreateAssignment {
+        room_id: String,
+    },
+    UpdateRoom {
+        room_id: String,
+        update: RoomUpdate,
+    },
     ChooseReceiveFolder,
     SaveDeviceGroup,
     UseDeviceGroup(DeviceGroup),
@@ -1286,6 +1604,7 @@ struct ShelfApp {
     rx: Receiver<Event>,
     clip_tx: Sender<Result<Payload, String>>,
     clip_rx: Receiver<Result<Payload, String>>,
+    control_rx: Receiver<Vec<PathBuf>>,
 
     device_name: String,
     device_public_key: String,
@@ -1330,6 +1649,10 @@ struct ShelfApp {
     monitors: Vec<monitors::Monitor>,
     monitors_checked: Instant,
     _tray: Option<TrayIcon>,
+    _hotkeys: Option<GlobalHotKeyManager>,
+    hotkey_toggle_id: u32,
+    hotkey_send_clipboard_id: u32,
+    hotkey_closed: bool,
 
     styled: Option<(bool, bool)>,
     logo: Option<egui::TextureHandle>,
@@ -1388,7 +1711,7 @@ fn parse_room_invite(value: &str) -> Option<(String, String)> {
 }
 
 impl ShelfApp {
-    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, control_rx: Receiver<Vec<PathBuf>>) -> Self {
         let ctx = cc.egui_ctx.clone();
         let wake_ctx = ctx.clone();
         let (handle, rx) =
@@ -1399,6 +1722,13 @@ impl ShelfApp {
         install_fonts(&ctx);
         let settings = Settings::load();
         let tray = build_tray(&ctx);
+        let (hotkeys, hotkey_toggle_id, hotkey_send_clipboard_id) =
+            match register_hotkeys() {
+                Some((manager, toggle, send_clipboard)) => {
+                    (Some(manager), toggle, send_clipboard)
+                }
+                None => (None, 0, 0),
+            };
         let now = Instant::now();
         Self {
             ctx,
@@ -1406,6 +1736,7 @@ impl ShelfApp {
             rx,
             clip_tx,
             clip_rx,
+            control_rx,
             device_name: String::new(),
             device_public_key: String::new(),
             paired: Vec::new(),
@@ -1447,6 +1778,10 @@ impl ShelfApp {
             monitors: monitors::list(),
             monitors_checked: now,
             _tray: tray,
+            _hotkeys: hotkeys,
+            hotkey_toggle_id,
+            hotkey_send_clipboard_id,
+            hotkey_closed: false,
             styled: None,
             logo,
             cur_w: COLLAPSED_W,
@@ -1608,10 +1943,24 @@ impl ShelfApp {
                     }
                     self.set_status(format!("Received {} from {}", item.name, item.from));
                     self.finish_download(&item.name, &item.from);
-                    self.items.insert(0, ShelfItem { item, received: Instant::now() });
+                    let preview = load_item_preview(&self.ctx, &item);
+                    self.items.insert(
+                        0,
+                        ShelfItem {
+                            item,
+                            received: Instant::now(),
+                            preview,
+                        },
+                    );
                     self.open_for(4);
                 }
-                Event::Progress { direction, name, peer, done, total } => {
+                Event::Progress {
+                    direction,
+                    name,
+                    peer,
+                    done,
+                    total,
+                } => {
                     self.update_transfer(direction, name, peer, done, total);
                 }
                 Event::SendDone { to, item, error } => {
@@ -1651,7 +2000,10 @@ impl ShelfApp {
             match res {
                 Ok(payload) => {
                     self.set_status("Sending clipboard...");
-                    self.handle.send(Command::Send { target: self.target.clone(), payload });
+                    self.handle.send(Command::Send {
+                        target: self.target.clone(),
+                        payload,
+                    });
                 }
                 Err(e) => self.set_status(e),
             }
@@ -1667,6 +2019,37 @@ impl ShelfApp {
             let _ = tx.send(res);
             ctx.request_repaint();
         });
+    }
+
+    fn send_paths(&mut self, paths: Vec<PathBuf>) {
+        if paths.is_empty() {
+            return;
+        }
+        self.set_status(format!("Sending {} file(s)...", paths.len()));
+        self.handle.send(Command::Send {
+            target: self.target.clone(),
+            payload: Payload::Files(paths),
+        });
+        self.hotkey_closed = false;
+        self.open_for(4);
+    }
+
+    fn poll_hotkeys(&mut self) {
+        while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
+            if event.state != HotKeyState::Pressed {
+                continue;
+            }
+            if event.id == self.hotkey_toggle_id {
+                self.hotkey_closed = !self.hotkey_closed;
+                if !self.hotkey_closed {
+                    self.open_for(8);
+                }
+            } else if event.id == self.hotkey_send_clipboard_id {
+                self.hotkey_closed = false;
+                self.open_for(3);
+                self.send_clipboard();
+            }
+        }
     }
 
     /// Index into `self.monitors` of the screen the shelf sits on.
@@ -1762,7 +2145,11 @@ fn human_size(n: u64) -> String {
         v /= 1024.0;
         u += 1;
     }
-    if u == 0 { format!("{n} B") } else { format!("{v:.1} {}", UNITS[u]) }
+    if u == 0 {
+        format!("{n} B")
+    } else {
+        format!("{v:.1} {}", UNITS[u])
+    }
 }
 
 fn transfer_rate(bytes_per_second: f64) -> String {
@@ -1809,12 +2196,17 @@ impl eframe::App for ShelfApp {
         }
 
         self.drain_events();
+        self.poll_hotkeys();
+        while let Ok(paths) = self.control_rx.try_recv() {
+            self.send_paths(paths);
+        }
 
         // Requests from the tray icon.
         if TRAY_QUIT.swap(false, Ordering::SeqCst) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if TRAY_SHOW.swap(false, Ordering::SeqCst) {
+            self.hotkey_closed = false;
             self.open_for(8);
         }
 
@@ -1827,7 +2219,11 @@ impl eframe::App for ShelfApp {
 
         // Files dropped onto the shelf are sent to the chosen device(s).
         let dropped: Vec<PathBuf> = ctx.input(|i| {
-            i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect()
+            i.raw
+                .dropped_files
+                .iter()
+                .filter_map(|f| f.path.clone())
+                .collect()
         });
         if !dropped.is_empty() {
             if let Some(room_id) = self.active_room_id.clone() {
@@ -1882,11 +2278,17 @@ impl eframe::App for ShelfApp {
             .transfers
             .iter()
             .rev()
-            .find(|t| t.direction == TransferDirection::Download && !t.finished && t.error.is_none())
+            .find(|t| {
+                t.direction == TransferDirection::Download && !t.finished && t.error.is_none()
+            })
             .map(|t| Receiving {
                 name: t.name.clone(),
                 peer: t.peer.clone(),
-                frac: if t.total == 0 { None } else { Some(t.done as f32 / t.total as f32) },
+                frac: if t.total == 0 {
+                    None
+                } else {
+                    Some(t.done as f32 / t.total as f32)
+                },
                 speed: t.done as f64 / t.started.elapsed().as_secs_f64().max(0.001),
             });
         if receiving.is_some() {
@@ -1894,12 +2296,13 @@ impl eframe::App for ShelfApp {
             self.last_active = Instant::now();
             ctx.request_repaint_after(Duration::from_millis(33));
         }
-        let expanded = self.pinned
+        let expanded = !self.hotkey_closed
+            && (self.pinned
             || hovering_files
             || self.last_active.elapsed() < Duration::from_millis(1200)
             || Instant::now() < self.open_until
             || self.my_code.is_some()
-            || self.pair_dialog.is_some();
+            || self.pair_dialog.is_some());
         self.apply_geometry(ctx, expanded);
 
         let collapsed = self.cur_w < 80.0;
@@ -2071,7 +2474,11 @@ impl eframe::App for ShelfApp {
                                 && capsule(ui, tr("Cancel"), Look::Tint(p.red), 24.0, None, true)
                                     .clicked()
                             {
-                                actions.push(Action::CancelTransfers);
+                                actions.push(Action::CancelTransfer {
+                                    direction: transfer.direction,
+                                    name: transfer.name.clone(),
+                                    peer: transfer.peer.clone(),
+                                });
                             }
                         });
                     }
@@ -3085,9 +3492,18 @@ impl eframe::App for ShelfApp {
                             .unwrap_or(true);
                         card(ui, |ui| {
                             ui.horizontal(|ui| {
-                                let (icon_rect, _) =
-                                    ui.allocate_exact_size(vec2(42.0, 42.0), egui::Sense::hover());
-                                draw_kind_icon(ui.painter(), icon_rect, &it.item.kind);
+                                if let Some(preview) = &it.preview {
+                                    ui.add(egui::Image::new(egui::load::SizedTexture::new(
+                                        preview.id(),
+                                        vec2(58.0, 58.0),
+                                    )));
+                                } else {
+                                    let (icon_rect, _) = ui.allocate_exact_size(
+                                        vec2(42.0, 42.0),
+                                        egui::Sense::hover(),
+                                    );
+                                    draw_kind_icon(ui.painter(), icon_rect, &it.item.kind);
+                                }
                                 ui.vertical(|ui| {
                                     ui.spacing_mut().item_spacing.y = 2.0;
                                     ui.label(
@@ -3095,8 +3511,20 @@ impl eframe::App for ShelfApp {
                                     );
                                     if let Some(t) = &it.item.text {
                                         ui.label(
-                                            RichText::new(shorten(&t.replace('\n', " "), 40))
+                                            RichText::new(shorten(&t.replace('\n', " "), 120))
                                                 .size(12.0)
+                                                .color(p.text2),
+                                        );
+                                    }
+                                    if it.preview.is_some()
+                                        && it.item.path.as_deref().is_some_and(|path| {
+                                            path.extension()
+                                                .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+                                        })
+                                    {
+                                        ui.label(
+                                            RichText::new("PDF preview")
+                                                .size(11.5)
                                                 .color(p.text2),
                                         );
                                     }
@@ -3198,7 +3626,17 @@ impl eframe::App for ShelfApp {
                     remove.extend(0..self.items.len());
                     self.status = "Shelf cleared".to_string();
                 }
-                Action::CancelTransfers => self.handle.send(Command::CancelTransfers),
+                Action::CancelTransfer {
+                    direction,
+                    name,
+                    peer,
+                } => {
+                    self.handle.send(Command::CancelTransfer {
+                        direction,
+                        name,
+                        peer,
+                    });
+                }
                 Action::CreateRoom => {
                     let name = self.room_name_input.trim().to_string();
                     if !name.is_empty() {
@@ -3224,8 +3662,7 @@ impl eframe::App for ShelfApp {
                 Action::RequestRoomFile { room_id } => {
                     let name = self.room_request_input.trim().to_string();
                     if !name.is_empty() {
-                        self.handle
-                            .send(Command::RequestRoomFile { room_id, name });
+                        self.handle.send(Command::RequestRoomFile { room_id, name });
                         self.room_request_input.clear();
                         self.set_status("File request sent");
                     }
@@ -3264,7 +3701,11 @@ impl eframe::App for ShelfApp {
                 }
                 Action::SaveDeviceGroup => {
                     let members = match &self.target {
-                        Target::All => self.paired.iter().map(|peer| peer.public_key.clone()).collect(),
+                        Target::All => self
+                            .paired
+                            .iter()
+                            .map(|peer| peer.public_key.clone())
+                            .collect(),
                         Target::Peer(key) => vec![key.clone()],
                         Target::Peers(keys) => keys.clone(),
                     };
@@ -3288,7 +3729,8 @@ impl eframe::App for ShelfApp {
                         .set_file_name("shelf-room.zip")
                         .save_file()
                     {
-                        self.handle.send(Command::ExportRoomBackup { room_id, path });
+                        self.handle
+                            .send(Command::ExportRoomBackup { room_id, path });
                     }
                 }
                 Action::ImportRoom => {
