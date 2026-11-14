@@ -17,7 +17,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const COLLAPSED_W: f32 = 14.0;
-const EXPANDED_W: f32 = 384.0;
+const EXPANDED_W: f32 = 430.0;
 const ITEM_TTL: Duration = Duration::from_secs(3600);
 
 // The window is transparent; the glass panel floats inside it with this gap on every side,
@@ -1540,7 +1540,7 @@ impl eframe::App for ShelfApp {
                                 } else {
                                     for room in &rooms {
                                         hairline(ui);
-                                        ui.horizontal(|ui| {
+                                        ui.vertical(|ui| {
                                             ui.vertical(|ui| {
                                                 ui.label(
                                                     RichText::new(&room.name)
@@ -1580,13 +1580,16 @@ impl eframe::App for ShelfApp {
                                                         .size(11.5)
                                                         .color(p.accent),
                                                     );
-                                                    ui.label(
-                                                        RichText::new(format!(
-                                                            "Invite link: shelf://room/{}/{}",
-                                                            room.id, room.invite_code
-                                                        ))
-                                                        .size(10.5)
-                                                        .color(p.text2),
+                                                    ui.add(
+                                                        egui::Label::new(
+                                                            RichText::new(format!(
+                                                                "Invite link: shelf://room/{}/{}",
+                                                                room.id, room.invite_code
+                                                            ))
+                                                            .size(10.5)
+                                                            .color(p.text2),
+                                                        )
+                                                        .wrap(),
                                                     );
                                                     room_qr(ui, room);
                                                 }
@@ -1598,7 +1601,7 @@ impl eframe::App for ShelfApp {
                                                 if active { "Dropbox active" } else { "Use dropbox" },
                                                 if active { Look::Primary } else { Look::Glass },
                                                 26.0,
-                                                None,
+                                                Some(ui.available_width()),
                                                 true,
                                             )
                                             .clicked()
@@ -1608,7 +1611,7 @@ impl eframe::App for ShelfApp {
                                             }
                                         });
                                         for file in room.files.iter().take(20) {
-                                            ui.horizontal(|ui| {
+                                            ui.horizontal_wrapped(|ui| {
                                                 ui.label(
                                                     RichText::new(format!(
                                                         "{} · {}",
@@ -1673,15 +1676,18 @@ impl eframe::App for ShelfApp {
                                             ui.add_space(4.0);
                                             ui.label(RichText::new("Announcements").size(12.0).color(p.text2));
                                             for announcement in room.announcements.iter().rev().take(5) {
-                                                ui.horizontal(|ui| {
-                                                    ui.label(
-                                                        RichText::new(format!(
-                                                            "{}{}",
-                                                            if announcement.pinned { "📌 " } else { "" },
-                                                            announcement.message
-                                                        ))
-                                                        .size(11.5)
-                                                        .color(p.text),
+                                                ui.horizontal_wrapped(|ui| {
+                                                    ui.add(
+                                                        egui::Label::new(
+                                                            RichText::new(format!(
+                                                                "{}{}",
+                                                                if announcement.pinned { "📌 " } else { "" },
+                                                                announcement.message
+                                                            ))
+                                                            .size(11.5)
+                                                            .color(p.text),
+                                                        )
+                                                        .wrap(),
                                                     );
                                                     if room.can_edit(&self.device_public_key)
                                                         && capsule(
@@ -1709,11 +1715,14 @@ impl eframe::App for ShelfApp {
                                             ui.add_space(4.0);
                                             ui.label(RichText::new("Shared clipboard").size(12.0).color(p.text2));
                                             for entry in room.clipboard.iter().rev().take(5) {
-                                                ui.horizontal(|ui| {
-                                                    ui.label(
-                                                        RichText::new(shorten(&entry.content, 42))
-                                                            .size(11.5)
-                                                            .color(p.text),
+                                                ui.horizontal_wrapped(|ui| {
+                                                    ui.add(
+                                                        egui::Label::new(
+                                                            RichText::new(shorten(&entry.content, 42))
+                                                                .size(11.5)
+                                                                .color(p.text),
+                                                        )
+                                                        .wrap(),
                                                     );
                                                     if capsule(ui, "Copy", Look::Glass, 22.0, None, true).clicked() {
                                                         let _ = clip::copy_text(&entry.content);
