@@ -1,6 +1,6 @@
 ; Builds Shelf-Setup.exe with Inno Setup 6 (free). Run from the installer folder.
 #define AppName "Shelf"
-#define AppVersion "0.1.0"
+#define AppVersion "0.1.1"
 
 [Setup]
 AppId={{B7E3C1A2-5D4F-4E8A-9C61-2F0A7D5B3E19}
@@ -12,8 +12,8 @@ DefaultGroupName=Shelf
 DisableProgramGroupPage=yes
 OutputDir=Output
 OutputBaseFilename=Shelf-Setup
-SetupIconFile=icon.ico
-UninstallDisplayIcon={app}\icon.ico
+SetupIconFile=shelf-icon.ico
+UninstallDisplayIcon={app}\shelf-icon.ico
 Compression=lzma2
 SolidCompression=yes
 PrivilegesRequired=admin
@@ -28,11 +28,11 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 
 [Files]
 Source: "..\target\release\shelf.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "shelf-icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\Shelf"; Filename: "{app}\shelf.exe"; IconFilename: "{app}\icon.ico"
-Name: "{autodesktop}\Shelf"; Filename: "{app}\shelf.exe"; IconFilename: "{app}\icon.ico"; Tasks: desktopicon
+Name: "{autoprograms}\Shelf"; Filename: "{app}\shelf.exe"; IconFilename: "{app}\shelf-icon.ico"
+Name: "{autodesktop}\Shelf"; Filename: "{app}\shelf.exe"; IconFilename: "{app}\shelf-icon.ico"; Tasks: desktopicon
 
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Shelf"; ValueData: """{app}\shelf.exe"""; Flags: uninsdeletevalue; Tasks: startup
