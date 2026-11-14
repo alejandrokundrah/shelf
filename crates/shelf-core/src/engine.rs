@@ -8,7 +8,7 @@ use crate::protocol::{
     MAX_TEXT_BYTES,
 };
 use crate::store::{inbox_dir, Config, PairedPeer, Room, RoomUpdate};
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use rand::Rng;
 use sha2::{Digest, Sha256};
@@ -1389,7 +1389,10 @@ async fn push_item<R: AsyncRead + Unpin>(
     label: &str,
 ) -> Result<()> {
     let key = shared.private_key()?;
-    let mut stream = timeout(Duration::from_secs(5), TcpStream::connect(dest.addr)).await??;
+    let mut stream = timeout(Duration::from_secs(5), TcpStream::connect(dest.addr))
+        .await
+        .map_err(|_| anyhow!("timed out connecting to {} at {}", dest.name, dest.addr))?
+        .with_context(|| format!("could not connect to {} at {}", dest.name, dest.addr))?;
     stream.write_u8(b'T').await?;
     let mut ch = timeout(Duration::from_secs(10), SecureChannel::initiate(stream, &key)).await??;
     if ch.remote_static != hex::decode(&dest.pk)? {
@@ -1471,14 +1474,18 @@ async fn send_file(
     room_id: Option<&str>,
     submission: Option<&str>,
 ) -> Result<()> {
-    let meta = tokio::fs::metadata(path).await?;
+    let meta = tokio::fs::metadata(path)
+        .await
+        .with_context(|| format!("source file is unavailable: {}", path.display()))?;
     if meta.is_dir() {
         bail!("folders are not supported yet");
     }
     if meta.len() > MAX_FILE_BYTES {
         bail!("file is too large");
     }
-    let mut hash_reader = tokio::fs::File::open(path).await?;
+    let mut hash_reader = tokio::fs::File::open(path)
+        .await
+        .with_context(|| format!("could not open source file: {}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut hash_buf = vec![0u8; CHUNK];
     loop {
@@ -1499,7 +1506,9 @@ async fn send_file(
     };
     let mut last_error = None;
     for attempt in 0..3 {
-        let file = tokio::fs::File::open(path).await?;
+        let file = tokio::fs::File::open(path)
+            .await
+            .with_context(|| format!("source file disappeared before sending: {}", path.display()))?;
         match push_item(shared, dest, header.clone(), file, label).await {
             Ok(()) => return Ok(()),
             Err(e) => {
@@ -1647,7 +1656,9 @@ async fn send_room_file(
 }
 
 async fn hash_file(path: &Path) -> Result<[u8; 32]> {
-    let mut file = tokio::fs::File::open(path).await?;
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .with_context(|| format!("could not read file for hashing: {}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; CHUNK];
     loop {
