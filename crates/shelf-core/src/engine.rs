@@ -2015,6 +2015,32 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
             config.save()?;
         }
     }
+    // Members are only paired with the owner, not with each other, so a member's upload
+    // reaches the owner alone. The owner relays it to everyone else in the room.
+    // Assignment submissions stay private to the owner and are never relayed.
+    if let (Some(room_id), Some(file_path)) = (header.room_id.clone(), path.clone()) {
+        if header.submission.is_none() && header.kind != ItemKind::Text {
+            let is_owner = {
+                let config = shared.config.lock().unwrap();
+                config
+                    .rooms
+                    .iter()
+                    .any(|room| room.id == room_id && room.owner_public_key == config.public_key)
+            };
+            if is_owner {
+                let targets = room_targets_except(shared, &room_id, &peer.public_key);
+                if !targets.is_empty() {
+                    tokio::spawn(send_room_file(
+                        shared.clone(),
+                        targets,
+                        room_id,
+                        file_path,
+                        None,
+                    ));
+                }
+            }
+        }
+    }
     shared.emit(Event::Received(ReceivedItem {
         id: rand::random::<u64>(),
         room_id: header.room_id.clone(),
