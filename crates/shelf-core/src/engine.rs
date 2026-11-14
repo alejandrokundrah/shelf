@@ -60,12 +60,12 @@ pub enum Command {
         room_id: String,
         invite_code: String,
     },
-    UploadRoomFile { room_id: String, path: PathBuf },
+    UploadRoomFiles { room_id: String, paths: Vec<PathBuf> },
     DeleteRoomFile { room_id: String, hash: String },
     RequestRoomFile { room_id: String, name: String },
-    SubmitRoomFile {
+    SubmitRoomFiles {
         room_id: String,
-        path: PathBuf,
+        paths: Vec<PathBuf>,
         assignment: String,
     },
     StartPairing,
@@ -155,6 +155,7 @@ struct PairOffer {
     id: u64,
 }
 
+#[derive(Clone)]
 struct Dest {
     pk: String,
     name: String,
@@ -167,6 +168,7 @@ struct Shared {
     wake: Box<dyn Fn() + Send + Sync>,
     offer: Mutex<Option<PairOffer>>,
     nearby: Mutex<HashMap<String, NearbyDevice>>,
+    last_known_addrs: Mutex<HashMap<String, SocketAddr>>,
     next_id: AtomicU64,
     receiving_paused: std::sync::atomic::AtomicBool,
     cancel_transfers: std::sync::atomic::AtomicBool,
@@ -234,6 +236,7 @@ impl Shared {
     fn targets(&self, t: &Target) -> Vec<Dest> {
         let cfg = self.config.lock().unwrap();
         let nearby = self.nearby.lock().unwrap();
+        let last_known = self.last_known_addrs.lock().unwrap();
         cfg.peers
             .iter()
             .filter(|p| match t {
@@ -249,6 +252,13 @@ impl Shared {
                         pk: p.public_key.clone(),
                         name: p.name.clone(),
                         addr: d.addr,
+                    })
+                    .or_else(|| {
+                        last_known.get(&p.public_key).copied().map(|addr| Dest {
+                            pk: p.public_key.clone(),
+                            name: p.name.clone(),
+                            addr,
+                        })
                     })
             })
             .collect()
@@ -354,6 +364,7 @@ pub fn start(wake: impl Fn() + Send + Sync + 'static) -> Result<(Handle, Receive
         wake: Box::new(wake),
         offer: Mutex::new(None),
         nearby: Mutex::new(HashMap::new()),
+        last_known_addrs: Mutex::new(HashMap::new()),
         next_id: AtomicU64::new(1),
         receiving_paused: std::sync::atomic::AtomicBool::new(false),
         cancel_transfers: std::sync::atomic::AtomicBool::new(false),
@@ -409,16 +420,23 @@ fn start_discovery(
                 let dname = info.get_property_val_str("name").unwrap_or("Unknown").to_string();
                 let ip = info.get_addresses().iter().find(|a| a.is_ipv4()).copied();
                 if let Some(ip) = ip {
+                    let addr = SocketAddr::new(ip, info.get_port());
                     let dev = NearbyDevice {
                         name: dname,
                         public_key: pk,
-                        addr: SocketAddr::new(ip, info.get_port()),
+                        addr,
                     };
+                    let discovered_key = dev.public_key.clone();
                     shared
                         .nearby
                         .lock()
                         .unwrap()
                         .insert(info.get_fullname().to_string(), dev);
+                    shared
+                        .last_known_addrs
+                        .lock()
+                        .unwrap()
+                        .insert(discovered_key, addr);
                     shared.publish_peers();
                 }
             }
@@ -519,29 +537,13 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                     }
                 });
             }
-            Command::UploadRoomFile { room_id, path } => {
-                let targets = shared
-                    .config
-                    .lock()
-                    .unwrap()
-                    .rooms
-                    .iter()
-                    .find(|room| room.id == room_id)
-                    .map(|room| {
-                        Target::Peers(
-                            room.members
-                                .iter()
-                                .filter(|member| member.public_key != room.owner_public_key)
-                                .map(|member| member.public_key.clone())
-                                .collect(),
-                        )
-                    });
-                let targets = targets.map(|target| shared.targets(&target)).unwrap_or_default();
+            Command::UploadRoomFiles { room_id, paths } => {
+                let targets = room_targets(&shared, &room_id);
                 if targets.is_empty() {
-                    shared.emit(Event::Error("No room members are nearby".into()));
+                    shared.emit(Event::Error("No room members are reachable. Open Shelf on the other devices and try again.".into()));
                 } else {
                     let s = shared.clone();
-                    tokio::spawn(send_room_file(s, targets, room_id, path, None));
+                    tokio::spawn(send_room_files(s, targets, room_id, paths, None));
                 }
             }
             Command::DeleteRoomFile { room_id, hash } => {
@@ -599,21 +601,21 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                     tokio::spawn(send_room_request(s, targets, room_id, name, None));
                 }
             }
-            Command::SubmitRoomFile {
+            Command::SubmitRoomFiles {
                 room_id,
-                path,
+                paths,
                 assignment,
             } => {
                 let targets = room_targets(&shared, &room_id);
                 if targets.is_empty() {
-                    shared.emit(Event::Error("No room members are nearby".into()));
+                    shared.emit(Event::Error("No room members are reachable. Open Shelf on the other devices and try again.".into()));
                 } else {
                     let s = shared.clone();
-                    tokio::spawn(send_room_file(
+                    tokio::spawn(send_room_files(
                         s,
                         targets,
                         room_id,
-                        path,
+                        paths,
                         Some(assignment),
                     ));
                 }
@@ -1843,6 +1845,25 @@ async fn send_room_file(
             });
             let _ = config.save();
         }
+    }
+}
+
+async fn send_room_files(
+    shared: Arc<Shared>,
+    targets: Vec<Dest>,
+    room_id: String,
+    paths: Vec<PathBuf>,
+    submission: Option<String>,
+) {
+    for path in paths {
+        send_room_file(
+            shared.clone(),
+            targets.clone(),
+            room_id.clone(),
+            path,
+            submission.clone(),
+        )
+        .await;
     }
 }
 

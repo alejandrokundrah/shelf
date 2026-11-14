@@ -1033,13 +1033,20 @@ impl ShelfApp {
         while let Ok(ev) = self.rx.try_recv() {
             match ev {
                 Event::RoomUpdated(room) => {
+                    let was_known = self.rooms.iter().any(|existing| existing.id == room.id);
                     if let Some(existing) = self.rooms.iter_mut().find(|r| r.id == room.id) {
                         *existing = room.clone();
                     } else {
                         self.rooms.push(room.clone());
                     }
+                    if !was_known && self.active_room_id.is_none() {
+                        self.active_room_id = Some(room.id.clone());
+                        self.set_status(format!("Room active: {}", room.name));
+                    }
                     self.record_audit(format!("Room updated: {}", room.name));
-                    self.set_status(format!("Room ready: {}", room.name));
+                    if was_known {
+                        self.set_status(format!("Room ready: {}", room.name));
+                    }
                 }
                 Event::RoomRequest {
                     room_id,
@@ -1282,21 +1289,17 @@ impl eframe::App for ShelfApp {
                 let assignment = self.room_assignment_input.trim().to_string();
                 if assignment.is_empty() {
                     self.set_status(format!("Uploading {} file(s) to room...", dropped.len()));
-                    for path in dropped {
-                        self.handle.send(Command::UploadRoomFile {
-                            room_id: room_id.clone(),
-                            path,
-                        });
-                    }
+                    self.handle.send(Command::UploadRoomFiles {
+                        room_id: room_id.clone(),
+                        paths: dropped,
+                    });
                 } else {
                     self.set_status(format!("Submitting {} file(s)...", dropped.len()));
-                    for path in dropped {
-                        self.handle.send(Command::SubmitRoomFile {
-                            room_id: room_id.clone(),
-                            path,
-                            assignment: assignment.clone(),
-                        });
-                    }
+                    self.handle.send(Command::SubmitRoomFiles {
+                        room_id: room_id.clone(),
+                        paths: dropped,
+                        assignment: assignment.clone(),
+                    });
                 }
             } else {
                 self.set_status(format!("Sending {} file(s)...", dropped.len()));
