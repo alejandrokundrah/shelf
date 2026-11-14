@@ -1921,7 +1921,10 @@ fn create_zip(source: &Path, entry_name: &str, folder: bool) -> Result<PathBuf> 
     let file = std::fs::File::create(&archive_path)?;
     let mut zip = zip::ZipWriter::new(file);
     let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
+        .compression_method(zip::CompressionMethod::Deflated)
+        // Folder transfers are still compressed, but use the fastest Deflate
+        // level so preparation does not delay the first network byte.
+        .compression_level(Some(1));
     if folder {
         add_directory_to_zip(&mut zip, source, source, options)?;
     } else {
@@ -1945,26 +1948,16 @@ fn prepare_transfer(path: &Path, label: &str) -> Result<PreparedTransfer> {
             temporary: true,
         });
     }
-    let archive = create_zip(path, label, false)?;
-    let archive_size = std::fs::metadata(&archive)?.len();
-    if archive_size < metadata.len() {
-        Ok(PreparedTransfer {
-            path: archive,
-            original_name: label.to_string(),
-            compressed: true,
-            folder: false,
-            temporary: true,
-        })
-    } else {
-        let _ = std::fs::remove_file(archive);
-        Ok(PreparedTransfer {
-            path: path.to_path_buf(),
-            original_name: label.to_string(),
-            compressed: false,
-            folder: false,
-            temporary: false,
-        })
-    }
+    // Individual files are sent as-is. In addition to avoiding a full
+    // compression pass before sending, this naturally skips formats that are
+    // already compressed (zip, mp4, jpg, png, and similar formats).
+    Ok(PreparedTransfer {
+        path: path.to_path_buf(),
+        original_name: label.to_string(),
+        compressed: false,
+        folder: false,
+        temporary: false,
+    })
 }
 
 fn cleanup_transfer(prepared: &PreparedTransfer) {
