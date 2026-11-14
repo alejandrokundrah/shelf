@@ -1569,9 +1569,15 @@ impl eframe::App for ShelfApp {
                     ui.set_width(inner.width().max(1.0));
                     // Header.
                     ui.horizontal(|ui| {
+                        ui.add(
+                            egui::Image::from_bytes(
+                                "bytes://shelf-app-icon",
+                                include_bytes!("../assets/icon.png"),
+                            )
+                            .fit_to_exact_size(vec2(34.0, 34.0)),
+                        );
                         ui.vertical(|ui| {
                             ui.spacing_mut().item_spacing.y = 0.0;
-                            ui.label(semibold("Shelf", 22.0).color(p.text));
                             if !self.device_name.is_empty() {
                                 ui.label(
                                     RichText::new(shorten(&self.device_name, 26))
