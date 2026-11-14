@@ -1,3 +1,4 @@
+use crate::dpapi;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -414,8 +415,13 @@ impl Room {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Config {
     pub device_name: String,
-    /// Hex. Stored in plain text in config.json (see README, security notes).
+    /// Hex. Always the plain key in memory. On disk it is empty when `protected_key`
+    /// holds the Windows DPAPI encrypted copy.
+    #[serde(default)]
     pub private_key: String,
+    /// Hex of the DPAPI encrypted private key (only readable by this Windows user).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protected_key: Option<String>,
     pub public_key: String,
     #[serde(default)]
     pub peers: Vec<PairedPeer>,
@@ -472,9 +478,18 @@ impl Config {
     pub fn load_or_create() -> Result<Config> {
         let path = config_path();
         if let Ok(text) = std::fs::read_to_string(&path) {
-            match serde_json::from_str::<Config>(&text) {
-                Ok(cfg) => return Ok(cfg),
-                Err(_) => {
+            let loaded = serde_json::from_str::<Config>(&text)
+                .ok()
+                .and_then(|mut cfg| cfg.unlock().map(|migrate| (cfg, migrate)));
+            match loaded {
+                Some((cfg, migrate)) => {
+                    if migrate {
+                        // Re-save so a plain-text key from an older version gets encrypted.
+                        let _ = cfg.save();
+                    }
+                    return Ok(cfg);
+                }
+                None => {
                     // Keep a copy of an unreadable file instead of silently destroying pairings.
                     let _ = std::fs::rename(&path, path.with_extension("json.bak"));
                 }
@@ -485,6 +500,7 @@ impl Config {
         let cfg = Config {
             device_name: std::env::var("COMPUTERNAME").unwrap_or_else(|_| "Windows PC".to_string()),
             private_key: hex::encode(&kp.private),
+            protected_key: None,
             public_key: hex::encode(&kp.public),
             peers: Vec::new(),
             rooms: Vec::new(),
@@ -497,9 +513,32 @@ impl Config {
         std::fs::create_dir_all(data_dir())?;
         let path = config_path();
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
+        // Encrypt the private key at rest when the OS can do it (Windows DPAPI).
+        let mut disk = self.clone();
+        if let Ok(raw) = hex::decode(&self.private_key) {
+            if let Some(blob) = dpapi::protect(&raw) {
+                disk.protected_key = Some(hex::encode(blob));
+                disk.private_key = String::new();
+            }
+        }
+        std::fs::write(&tmp, serde_json::to_vec_pretty(&disk)?)?;
         std::fs::rename(&tmp, &path)?;
         Ok(())
+    }
+
+    /// Fills in `private_key` from the DPAPI copy. Returns None if the file holds no usable
+    /// key, otherwise whether the file should be re-saved to encrypt a plain-text key.
+    fn unlock(&mut self) -> Option<bool> {
+        if let Some(blob_hex) = self.protected_key.take() {
+            let blob = hex::decode(blob_hex).ok()?;
+            let key = dpapi::unprotect(&blob)?;
+            self.private_key = hex::encode(key);
+            return Some(false);
+        }
+        if self.private_key.is_empty() {
+            return None;
+        }
+        Some(cfg!(windows))
     }
 
     pub fn find_peer(&self, public_key: &[u8]) -> Option<&PairedPeer> {

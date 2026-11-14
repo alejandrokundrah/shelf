@@ -2,6 +2,7 @@
 //! The UI talks to this crate only through `start()`, `Command` and `Event`.
 
 pub mod channel;
+mod dpapi;
 pub mod engine;
 pub mod pairing;
 pub mod protocol;
@@ -12,5 +13,5 @@ pub use engine::{
     TransferDirection,
 };
 pub use protocol::{ItemKind, RoomMessage};
-pub use store::{inbox_dir, room_dir};
+pub use store::{data_dir, inbox_dir, room_dir};
 pub use store::{Room, RoomFile, RoomMember, RoomRole, RoomUpdate};

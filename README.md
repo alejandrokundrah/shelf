@@ -22,6 +22,8 @@ network connection.
 - Detect the Windows system language and localize the interface in English,
   French, Spanish, or German, with English fallback.
 - Windows tray/shortcut-friendly installer workflow.
+- Tray icon: left-click to open the shelf, right-click for Show Shelf / Quit Shelf.
+- Choose the left or right screen edge, and which monitor, under Send to.
 
 ## Install
 
@@ -128,9 +130,9 @@ last known address of paired members when discovery briefly goes quiet.
 - Unpaired devices are rejected.
 - The installer opens the Windows Firewall only for PRIVATE networks.
 - Room traffic uses the same authenticated LAN channel.
-- The device key is currently stored in
-  %LOCALAPPDATA%\\Shelf\\config.json; DPAPI protection is a future hardening
-  task.
+- The device key in %LOCALAPPDATA%\\Shelf\\config.json is encrypted with Windows
+  DPAPI, so only your Windows user on this PC can read it. Keys from older
+  versions are encrypted automatically the next time Shelf starts.
 
 Shelf does not use a cloud relay. Devices must be reachable on the same local
 network.
