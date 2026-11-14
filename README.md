@@ -15,7 +15,10 @@ network connection.
 - Show upload/download progress, speed, ETA, and transfer failures.
 - Pause incoming transfers while continuing to send.
 - Cancel active transfers and resume interrupted file transfers.
+- Cancel transfers individually from their own progress row; interrupted large files resume from the completed portion after a reconnect.
+- Right-click files or folders in Explorer and choose **Send with Shelf** instead of dragging them to the edge.
 - Detect duplicate content and avoid creating duplicate received items.
+- Preview received images and PDFs in the item list, with a quick text peek for received text.
 - Windows notifications for received items.
 - Activity log for pairing, connections, transfers, and failures.
 - Clear all shelf items with one action.
@@ -53,6 +56,9 @@ Pairing is required before devices can exchange data.
 - Choose **All devices** to broadcast.
 - Select several paired devices to send to a specific group.
 - Drag files onto the shelf or choose **Send Clipboard**.
+- Use **Ctrl+Shift+C** to send the current clipboard without opening the shelf.
+- Use **Ctrl+Shift+S** to open or close the shelf from any application.
+- Use Explorer's **Send with Shelf** context-menu action for files and folders.
 - Received text or images can be copied back to the clipboard.
 - Received files can be revealed in Explorer.
 - Items expire after one hour by default.
