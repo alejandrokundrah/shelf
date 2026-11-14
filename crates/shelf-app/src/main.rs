@@ -1555,6 +1555,14 @@ fn notify_arrival(item: &ReceivedItem) {
         .show();
 }
 
+fn notify_room_message(title: &str, body: &str) {
+    let _ = notify_rust::Notification::new()
+        .summary(title)
+        .body(body)
+        .appname("Shelf")
+        .show();
+}
+
 enum Action {
     SendClipboard,
     StartPairing,
@@ -1578,6 +1586,7 @@ enum Action {
         room_id: String,
         hash: String,
     },
+    DeleteRoom(String),
     RequestRoomFile {
         room_id: String,
     },
@@ -1587,6 +1596,7 @@ enum Action {
     CreateAssignment {
         room_id: String,
     },
+    ChooseAssignmentFiles,
     UpdateRoom {
         room_id: String,
         update: RoomUpdate,
@@ -1635,6 +1645,7 @@ struct ShelfApp {
     assignment_title_input: String,
     assignment_deadline_input: String,
     assignment_instructions_input: String,
+    assignment_files: Vec<PathBuf>,
     my_code: Option<(String, Instant)>,
     pair_dialog: Option<PairDialog>,
 
@@ -1766,6 +1777,7 @@ impl ShelfApp {
             assignment_title_input: String::new(),
             assignment_deadline_input: String::new(),
             assignment_instructions_input: String::new(),
+            assignment_files: Vec::new(),
             my_code: None,
             pair_dialog: None,
             auto_copy: settings.auto_copy,
@@ -1863,6 +1875,7 @@ impl ShelfApp {
             match ev {
                 Event::RoomUpdated(room) => {
                     let was_known = self.rooms.iter().any(|existing| existing.id == room.id);
+                    let previous = self.rooms.iter().find(|existing| existing.id == room.id).cloned();
                     if let Some(existing) = self.rooms.iter_mut().find(|r| r.id == room.id) {
                         *existing = room.clone();
                     } else {
@@ -1875,7 +1888,22 @@ impl ShelfApp {
                     self.record_audit(format!("Room updated: {}", room.name));
                     if was_known {
                         self.set_status(format!("Room ready: {}", room.name));
+                        if let Some(old) = previous {
+                            for announcement in room.announcements.iter().filter(|item| {
+                                !old.announcements.iter().any(|existing| existing.id == item.id)
+                                    && item.posted_by != self.device_public_key
+                            }) {
+                                notify_room_message("Team announcement", &announcement.message);
+                            }
+                        }
                     }
+                }
+                Event::RoomRemoved(room_id) => {
+                    self.rooms.retain(|room| room.id != room_id);
+                    if self.active_room_id.as_deref() == Some(room_id.as_str()) {
+                        self.active_room_id = None;
+                    }
+                    self.set_status("Room deleted");
                 }
                 Event::RoomRequest {
                     room_id,
@@ -1884,6 +1912,7 @@ impl ShelfApp {
                 } => {
                     self.record_audit(format!("File request in {room_id}: {name} from {from}"));
                     self.set_status(format!("{from} requested {name}"));
+                    notify_room_message("Room file request", &format!("{from} requested {name}"));
                 }
                 Event::Ready {
                     device_name,
@@ -2643,6 +2672,14 @@ impl eframe::App for ShelfApp {
                                     }
                                 });
                                 ui.horizontal(|ui| {
+                                    if capsule(ui, "Choose assignment file", Look::Glass, 28.0, None, true).clicked() {
+                                        actions.push(Action::ChooseAssignmentFiles);
+                                    }
+                                    if !self.assignment_files.is_empty() {
+                                        ui.label(format!("{} file(s) selected", self.assignment_files.len()));
+                                    }
+                                });
+                                ui.horizontal(|ui| {
                                     if capsule(ui, "Restore room", Look::Glass, 28.0, None, true).clicked() {
                                         actions.push(Action::ImportRoom);
                                     }
@@ -2688,7 +2725,7 @@ impl eframe::App for ShelfApp {
                                     )
                                     .clicked()
                                     {
-                                        if let Some(room) = rooms.first() {
+                                        if let Some(room) = self.active_room_id.as_ref().and_then(|id| rooms.iter().find(|room| &room.id == id)).or_else(|| rooms.first()) {
                                             actions.push(Action::RequestRoomFile {
                                                 room_id: room.id.clone(),
                                             });
@@ -2904,8 +2941,7 @@ impl eframe::App for ShelfApp {
                                             )
                                             .clicked()
                                             {
-                                                self.active_room_id =
-                                                    if active { None } else { Some(room.id.clone()) };
+                                                    self.active_room_id = Some(room.id.clone());
                                             }
                                         });
                                         for file in room.files.iter().take(20) {
@@ -3102,6 +3138,9 @@ impl eframe::App for ShelfApp {
                                             );
                                         }
                                         if room.owner_public_key == self.device_public_key {
+                                            if capsule(ui, "Delete room", Look::Tint(p.red), 28.0, Some(ui.available_width()), true).clicked() {
+                                                actions.push(Action::DeleteRoom(room.id.clone()));
+                                            }
                                             if capsule(ui, "Export backup", Look::Glass, 28.0, Some(ui.available_width()), true).clicked() {
                                                 actions.push(Action::ExportRoom(room.id.clone()));
                                             }
@@ -3181,6 +3220,9 @@ impl eframe::App for ShelfApp {
                                                 actions.push(Action::CreateAssignment {
                                                     room_id: room.id.clone(),
                                                 });
+                                            }
+                                            if !self.assignment_files.is_empty() {
+                                                ui.label(RichText::new(format!("Assignment files: {}", self.assignment_files.iter().filter_map(|path| path.file_name()).map(|name| name.to_string_lossy()).collect::<Vec<_>>().join(", "))).size(11.0).color(p.text2));
                                             }
                                         }
                                         for assignment in &room.assignments {
@@ -3659,6 +3701,9 @@ impl eframe::App for ShelfApp {
                 Action::DeleteRoomFile { room_id, hash } => {
                     self.handle.send(Command::DeleteRoomFile { room_id, hash });
                 }
+                Action::DeleteRoom(room_id) => {
+                    self.handle.send(Command::DeleteRoom { room_id });
+                }
                 Action::RequestRoomFile { room_id } => {
                     let name = self.room_request_input.trim().to_string();
                     if !name.is_empty() {
@@ -3680,16 +3725,30 @@ impl eframe::App for ShelfApp {
                         .trim()
                         .parse::<u64>()
                         .unwrap_or_default();
+                    let required_files = self.assignment_files.iter().filter_map(|path| {
+                        path.file_name().map(|name| name.to_string_lossy().to_string())
+                    }).collect::<Vec<_>>();
                     self.handle.send(Command::CreateAssignment {
-                        room_id,
+                        room_id: room_id.clone(),
                         title: self.assignment_title_input.trim().to_string(),
                         deadline,
                         instructions: self.assignment_instructions_input.trim().to_string(),
-                        required_files: Vec::new(),
+                        required_files,
                     });
+                    if !self.assignment_files.is_empty() {
+                        self.handle.send(Command::UploadRoomFiles {
+                            room_id,
+                            paths: std::mem::take(&mut self.assignment_files),
+                        });
+                    }
                     self.assignment_title_input.clear();
                     self.assignment_deadline_input.clear();
                     self.assignment_instructions_input.clear();
+                }
+                Action::ChooseAssignmentFiles => {
+                    if let Some(paths) = rfd::FileDialog::new().pick_files() {
+                        self.assignment_files = paths;
+                    }
                 }
                 Action::ChooseReceiveFolder => {
                     if let Some(path) = rfd::FileDialog::new()

@@ -79,6 +79,9 @@ pub enum RoomMessage {
         room_id: String,
         hash: String,
     },
+    DeleteRoom {
+        room_id: String,
+    },
     Request {
         room_id: String,
         name: String,
