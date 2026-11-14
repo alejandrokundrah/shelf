@@ -641,6 +641,24 @@ fn apply_style(ctx: &egui::Context, p: Pal) {
         w.expansion = 0.0;
     }
     v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, p.card_edge);
+    if p.m3 {
+        // Material 3 outlined text fields: 1px outline, 2px primary ring on focus.
+        v.extreme_bg_color = Color32::TRANSPARENT;
+        v.selection.bg_fill = p.accent.gamma_multiply(0.30);
+        v.selection.stroke = Stroke::new(2.0_f32, p.accent);
+        v.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, p.text3);
+        v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, p.text2);
+        v.widgets.active.bg_stroke = Stroke::new(2.0_f32, p.accent);
+        v.widgets.open.bg_stroke = Stroke::new(1.0_f32, p.text2);
+        v.widgets.hovered.weak_bg_fill = p.fill_hover;
+        v.widgets.active.weak_bg_fill = p.fill_press;
+        v.popup_shadow = egui::epaint::Shadow {
+            offset: vec2(0.0, 4.0),
+            blur: 12.0,
+            spread: 0.0,
+            color: Color32::from_black_alpha(if p.dark { 110 } else { 40 }),
+        };
+    }
 
     ctx.set_style(style);
 }
@@ -691,8 +709,8 @@ fn status_pill(ui: &mut egui::Ui, text: &str) {
     let bad = text.contains("Could not") || text.contains("failed") || text.contains("rror");
     egui::Frame::none()
         .fill(p.fill)
-        .rounding(16.0)
-        .inner_margin(egui::Margin::symmetric(12.0, 7.0))
+        .rounding(if p.m3 { 12.0 } else { 16.0 })
+        .inner_margin(egui::Margin::symmetric(12.0, if p.m3 { 10.0 } else { 7.0 }))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -706,6 +724,15 @@ fn status_pill(ui: &mut egui::Ui, text: &str) {
 /// Round glass button used in the header. Returns the rect so the caller can paint a glyph.
 fn glass_circle(ui: &mut egui::Ui, active: bool) -> (Rect, egui::Response) {
     let p = pal();
+    if p.m3 {
+        let (rect, resp) = ui.allocate_exact_size(vec2(36.0, 36.0), egui::Sense::click());
+        let base = if active { p.accent } else { Color32::TRANSPARENT };
+        let layer = if resp.is_pointer_button_down_on() { 0.12 } else if resp.hovered() { 0.08 } else { 0.0 };
+        let on = if active { p.on_accent } else { p.text2 };
+        ui.painter().circle_filled(rect.center(), 18.0, base);
+        ui.painter().circle_filled(rect.center(), 18.0, on.gamma_multiply(layer));
+        return (rect, resp.on_hover_cursor(egui::CursorIcon::PointingHand));
+    }
     let (rect, resp) = ui.allocate_exact_size(vec2(30.0, 30.0), egui::Sense::click());
     let fill = if active {
         p.accent
@@ -940,11 +967,13 @@ fn capsule(
 
 fn thin_progress(ui: &mut egui::Ui, frac: f32) {
     let p = pal();
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 5.0), egui::Sense::hover());
-    ui.painter().rect_filled(rect, 2.5, p.fill);
+    let h = if p.m3 { 4.0 } else { 5.0 };
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), egui::Sense::hover());
+    let track = if p.m3 { p.text3.gamma_multiply(0.35) } else { p.fill };
+    ui.painter().rect_filled(rect, h / 2.0, track);
     let mut fill = rect;
     fill.set_width(rect.width() * frac.clamp(0.0, 1.0));
-    ui.painter().rect_filled(fill, 2.5, p.accent);
+    ui.painter().rect_filled(fill, h / 2.0, p.accent);
 }
 
 fn rounded_rect_path(rect: Rect, r: f32) -> Vec<Pos2> {
@@ -982,13 +1011,18 @@ fn drop_zone(ui: &mut egui::Ui, hovering: bool) {
     let fill = p.card.lerp_to_gamma(p.accent.gamma_multiply(0.16), t);
     let line = p.text3.gamma_multiply(0.7).lerp_to_gamma(p.accent, t);
     let painter = ui.painter();
-    painter.rect_filled(rect, 22.0, fill);
-    let path = rounded_rect_path(rect.shrink(1.0), 22.0);
+    let rad = if p.m3 { 28.0 } else { 22.0 };
+    painter.rect_filled(rect, rad, fill);
+    let path = rounded_rect_path(rect.shrink(1.0), rad);
     painter.extend(egui::Shape::dashed_line(&path, Stroke::new(1.4_f32, line), 7.0, 6.0));
 
     let c = rect.center() + vec2(0.0, -22.0);
     let badge = p.accent.gamma_multiply(0.16 + 0.14 * t);
-    painter.circle_filled(c, 22.0, badge);
+    if p.m3 {
+        painter.rect_filled(Rect::from_center_size(c, vec2(56.0, 40.0)), 16.0, badge);
+    } else {
+        painter.circle_filled(c, 22.0, badge);
+    }
     arrow_tray(painter, c, p.accent);
 
     painter.text(
@@ -1064,7 +1098,13 @@ fn draw_device_icon(painter: &egui::Painter, rect: Rect, online: bool) {
     painter.rect_stroke(Rect::from_center_size(c + vec2(0.0, -1.5), vec2(15.0, 10.0)), 2.5, s);
     painter.line_segment([c + vec2(-4.0, 7.0), c + vec2(4.0, 7.0)], s);
     let badge = c + vec2(9.5, 9.5);
-    let ring = if p.dark { Color32::from_rgb(40, 40, 44) } else { Color32::from_rgb(244, 244, 247) };
+    let ring = if p.m3 {
+        p.card
+    } else if p.dark {
+        Color32::from_rgb(40, 40, 44)
+    } else {
+        Color32::from_rgb(244, 244, 247)
+    };
     painter.circle_filled(badge, 5.5, ring);
     painter.circle_filled(badge, 3.8, if online { p.good } else { p.text3 });
 }
@@ -1080,7 +1120,10 @@ fn code_tiles(ui: &mut egui::Ui, code: &str) {
     for i in 0..6 {
         let x = rect.left() + i as f32 * (tile_w + gap);
         let r = Rect::from_min_size(Pos2::new(x, rect.top()), vec2(tile_w, rect.height()));
-        ui.painter().rect_filled(r, 14.0, p.fill);
+        ui.painter().rect_filled(r, if p.m3 { 12.0 } else { 14.0 }, p.fill);
+        if p.m3 {
+            ui.painter().rect_stroke(r, 12.0, Stroke::new(1.0_f32, p.text3));
+        }
         if let Some(d) = digits.get(i) {
             ui.painter().text(r.center(), Align2::CENTER_CENTER, d.to_string(), sb_font(28.0), p.text);
         }
@@ -2022,7 +2065,7 @@ impl eframe::App for ShelfApp {
                         ui.label(RichText::new("Device groups").size(13.5).color(p.text));
                         ui.horizontal_wrapped(|ui| {
                             for group in &device_groups {
-                                if capsule(ui, &group.name, Look::Glass, 28.0, None, true).clicked() {
+                                if capsule(ui, &group.name, Look::Chip(false), 28.0, None, true).clicked() {
                                     actions.push(Action::UseDeviceGroup(group.clone()));
                                 }
                             }
