@@ -1079,7 +1079,9 @@ impl eframe::App for ShelfApp {
         }
 
         self.drain_events();
-        if let Some((room_id, invite_code)) = parse_room_invite(&self.room_code_input) {
+        if let Some((room_id, invite_code)) = parse_room_invite(&self.room_code_input)
+            .or_else(|| parse_room_invite(&self.room_id_input))
+        {
             self.room_id_input = room_id;
             self.room_code_input = invite_code;
         }
@@ -1504,11 +1506,27 @@ impl eframe::App for ShelfApp {
                                                 if role == "Owner" {
                                                     ui.label(
                                                         RichText::new(format!(
+                                                            "Room ID: {}",
+                                                            room.id
+                                                        ))
+                                                        .size(11.5)
+                                                        .color(p.text2),
+                                                    );
+                                                    ui.label(
+                                                        RichText::new(format!(
                                                             "Invite code: {}",
                                                             room.invite_code
                                                         ))
                                                         .size(11.5)
                                                         .color(p.accent),
+                                                    );
+                                                    ui.label(
+                                                        RichText::new(format!(
+                                                            "Invite link: shelf://room/{}/{}",
+                                                            room.id, room.invite_code
+                                                        ))
+                                                        .size(10.5)
+                                                        .color(p.text2),
                                                     );
                                                     room_qr(ui, room);
                                                 }
