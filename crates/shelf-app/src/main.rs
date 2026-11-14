@@ -1157,6 +1157,88 @@ struct TransferStatus {
     error: Option<String>,
 }
 
+struct Receiving {
+    name: String,
+    peer: String,
+    frac: Option<f32>,
+    speed: f64,
+}
+
+/// Material 3 "notch": an inverse-surface pill with a circular progress indicator that
+/// grows in at the top of the panel while this device is receiving a file.
+fn m3_receive_notch(ui: &mut egui::Ui, receiving: Option<&Receiving>) {
+    let p = pal();
+    let open = ui
+        .ctx()
+        .animate_bool_responsive(egui::Id::new("m3_receive_notch"), receiving.is_some());
+    let Some(r) = receiving else { return };
+    if open <= 0.01 {
+        return;
+    }
+    const H: f32 = 56.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), H * open), egui::Sense::hover());
+    let full = Rect::from_min_size(rect.min, vec2(rect.width(), H));
+    let painter = ui.painter().with_clip_rect(rect);
+    let (bg, fg, arc) = if p.dark {
+        (Color32::from_rgb(230, 225, 229), Color32::from_rgb(49, 48, 51), p.accent)
+    } else {
+        (Color32::from_rgb(49, 48, 51), Color32::from_rgb(244, 239, 244), p.accent.lerp_to_gamma(Color32::WHITE, 0.45))
+    };
+    painter.rect_filled(full, 28.0, bg);
+
+    // Circular progress indicator.
+    let c = Pos2::new(full.left() + 30.0, full.center().y);
+    let radius = 13.0;
+    painter.circle_stroke(c, radius, Stroke::new(3.0_f32, fg.gamma_multiply(0.22)));
+    let t = ui.input(|i| i.time) as f32;
+    let (start, sweep) = match r.frac {
+        Some(f) => (-std::f32::consts::FRAC_PI_2, f.clamp(0.0, 1.0) * std::f32::consts::TAU),
+        None => (t * 4.0, 1.7 + 0.8 * (t * 2.5).sin()),
+    };
+    let steps = ((sweep / std::f32::consts::TAU) * 64.0).ceil().max(2.0) as usize;
+    let pts: Vec<Pos2> = (0..=steps)
+        .map(|i| {
+            let a = start + sweep * i as f32 / steps as f32;
+            c + vec2(a.cos(), a.sin()) * radius
+        })
+        .collect();
+    painter.add(egui::Shape::line(pts, Stroke::new(3.0_f32, arc)));
+    let tip = Stroke::new(1.6_f32, fg);
+    painter.line_segment([c + vec2(0.0, -4.0), c + vec2(0.0, 3.5)], tip);
+    painter.line_segment([c + vec2(-3.0, 0.5), c + vec2(0.0, 3.5)], tip);
+    painter.line_segment([c + vec2(3.0, 0.5), c + vec2(0.0, 3.5)], tip);
+
+    let x = full.left() + 54.0;
+    painter.text(
+        Pos2::new(x, full.center().y - 9.0),
+        Align2::LEFT_CENTER,
+        format!("Receiving {}", shorten(&r.name, 22)),
+        sb_font(13.0),
+        fg,
+    );
+    let detail = if r.speed > 0.0 {
+        format!("{}/s · from {}", human_size(r.speed as u64), shorten(&r.peer, 16))
+    } else {
+        format!("from {}", shorten(&r.peer, 16))
+    };
+    painter.text(
+        Pos2::new(x, full.center().y + 9.0),
+        Align2::LEFT_CENTER,
+        detail,
+        FontId::proportional(11.5),
+        fg.gamma_multiply(0.75),
+    );
+    if let Some(f) = r.frac {
+        painter.text(
+            Pos2::new(full.right() - 18.0, full.center().y),
+            Align2::RIGHT_CENTER,
+            format!("{}%", (f.clamp(0.0, 1.0) * 100.0).round() as u32),
+            sb_font(15.0),
+            fg,
+        );
+    }
+}
+
 fn notify_arrival(item: &ReceivedItem) {
     let kind = match item.kind {
         ItemKind::File => "File",
@@ -1796,6 +1878,22 @@ impl eframe::App for ShelfApp {
         if pointer_inside || hovering_files {
             self.last_active = Instant::now();
         }
+        let receiving = self
+            .transfers
+            .iter()
+            .rev()
+            .find(|t| t.direction == TransferDirection::Download && !t.finished && t.error.is_none())
+            .map(|t| Receiving {
+                name: t.name.clone(),
+                peer: t.peer.clone(),
+                frac: if t.total == 0 { None } else { Some(t.done as f32 / t.total as f32) },
+                speed: t.done as f64 / t.started.elapsed().as_secs_f64().max(0.001),
+            });
+        if receiving.is_some() {
+            // Keep the panel open and the animation running while a file arrives.
+            self.last_active = Instant::now();
+            ctx.request_repaint_after(Duration::from_millis(33));
+        }
         let expanded = self.pinned
             || hovering_files
             || self.last_active.elapsed() < Duration::from_millis(1200)
@@ -1876,6 +1974,9 @@ impl eframe::App for ShelfApp {
                     .max_width(inner.width())
                     .show(ui, |ui| {
                     ui.set_width(inner.width().max(1.0));
+                    if p.m3 {
+                        m3_receive_notch(ui, receiving.as_ref());
+                    }
                     // Header.
                     ui.horizontal(|ui| {
                         match &self.logo {
