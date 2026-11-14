@@ -1386,4 +1386,37 @@ async fn send_room_file(
         .await;
         shared.finish_send(&dest.name, label.clone(), result);
     }
+    if let Ok(hash) = hash_file(&path).await {
+        let mut config = shared.config.lock().unwrap();
+        let uploader = config.device_name.clone();
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default();
+        if let Some(room) = config.rooms.iter_mut().find(|room| room.id == room_id) {
+            room.add_file(crate::store::RoomFile {
+                hash: hex::encode(hash),
+                name: label,
+                size: std::fs::metadata(&path).map(|m| m.len()).unwrap_or_default(),
+                uploaded_by: uploader,
+                uploaded_at: timestamp,
+                submission,
+            });
+            let _ = config.save();
+        }
+    }
+}
+
+async fn hash_file(path: &Path) -> Result<[u8; 32]> {
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; CHUNK];
+    loop {
+        let count = file.read(&mut buffer).await?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(hasher.finalize().into())
 }
