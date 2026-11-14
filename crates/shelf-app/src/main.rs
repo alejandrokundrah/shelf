@@ -1,10 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod clip;
+mod monitors;
 
 use eframe::egui::{
-    self, vec2, Align, Align2, Color32, FontFamily, FontId, Layout, Pos2, Rect, RichText, Rounding,
-    Stroke,
+    self, pos2, vec2, Align, Align2, Color32, FontFamily, FontId, Layout, Pos2, Rect, RichText,
+    Rounding, Stroke, Vec2,
 };
 use shelf_core::{
     Command, Event, Handle, ItemKind, NearbyDevice, Payload, PeerStatus, ReceivedItem, Target,
@@ -13,13 +14,114 @@ use shelf_core::{
 use std::cell::Cell;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 const COLLAPSED_W: f32 = 14.0;
 const EXPANDED_W: f32 = 430.0;
 const ITEM_TTL: Duration = Duration::from_secs(3600);
+
+// Requests coming from the tray icon (set on another thread, read in `update`).
+static TRAY_SHOW: AtomicBool = AtomicBool::new(false);
+static TRAY_QUIT: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Side {
+    Left,
+    Right,
+}
+
+/// Small preferences kept in `settings.txt` (one `key=value` per line).
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Settings {
+    side: Side,
+    monitor: usize,
+    auto_copy: bool,
+    pinned: bool,
+}
+
+impl Settings {
+    fn path() -> PathBuf {
+        shelf_core::data_dir().join("settings.txt")
+    }
+
+    fn load() -> Settings {
+        let mut s = Settings { side: Side::Right, monitor: usize::MAX, auto_copy: true, pinned: false };
+        if let Ok(text) = std::fs::read_to_string(Self::path()) {
+            for line in text.lines() {
+                let Some((k, v)) = line.split_once('=') else { continue };
+                match k.trim() {
+                    "side" => s.side = if v.trim() == "left" { Side::Left } else { Side::Right },
+                    "monitor" => s.monitor = v.trim().parse().unwrap_or(usize::MAX),
+                    "auto_copy" => s.auto_copy = v.trim() != "0",
+                    "pinned" => s.pinned = v.trim() == "1",
+                    _ => {}
+                }
+            }
+        }
+        s
+    }
+
+    fn save(&self) {
+        let text = format!(
+            "side={}\nmonitor={}\nauto_copy={}\npinned={}\n",
+            if self.side == Side::Left { "left" } else { "right" },
+            if self.monitor == usize::MAX { -1 } else { self.monitor as i64 },
+            if self.auto_copy { 1 } else { 0 },
+            if self.pinned { 1 } else { 0 },
+        );
+        let _ = std::fs::create_dir_all(shelf_core::data_dir());
+        let _ = std::fs::write(Self::path(), text);
+    }
+}
+
+/// Tray icon with "Show Shelf" and "Quit Shelf". Must be created on the UI thread.
+fn build_tray(ctx: &egui::Context) -> Option<TrayIcon> {
+    let data = load_icon()?;
+    let icon = Icon::from_rgba(data.rgba, data.width, data.height).ok()?;
+    let menu = Menu::new();
+    let show = MenuItem::new("Show Shelf", true, None);
+    let quit = MenuItem::new("Quit Shelf", true, None);
+    menu.append(&show).ok()?;
+    menu.append(&PredefinedMenuItem::separator()).ok()?;
+    menu.append(&quit).ok()?;
+    let show_id = show.id().clone();
+    let quit_id = quit.id().clone();
+
+    let menu_ctx = ctx.clone();
+    MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+        if event.id == show_id {
+            TRAY_SHOW.store(true, Ordering::SeqCst);
+        } else if event.id == quit_id {
+            TRAY_QUIT.store(true, Ordering::SeqCst);
+        }
+        menu_ctx.request_repaint();
+    }));
+    let click_ctx = ctx.clone();
+    TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
+        if let TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        } = event
+        {
+            TRAY_SHOW.store(true, Ordering::SeqCst);
+            click_ctx.request_repaint();
+        }
+    }));
+
+    TrayIconBuilder::new()
+        .with_menu(Box::new(menu))
+        .with_menu_on_left_click(false)
+        .with_tooltip("Shelf")
+        .with_icon(icon)
+        .build()
+        .ok()
+}
 
 #[derive(Clone, Copy)]
 enum Locale {
@@ -849,12 +951,18 @@ struct ShelfApp {
     auto_copy: bool,
     receiving_paused: bool,
     pinned: bool,
+    side: Side,
+    monitor: usize,
+    saved_settings: Settings,
+
+    monitors: Vec<monitors::Monitor>,
+    monitors_checked: Instant,
+    _tray: Option<TrayIcon>,
 
     styled_dark: Option<bool>,
 
     cur_w: f32,
-    applied_w: f32,
-    positioned: bool,
+    last_geo: Option<(Vec2, Pos2)>,
     last_active: Instant,
     open_until: Instant,
 }
@@ -915,6 +1023,8 @@ impl ShelfApp {
         let (clip_tx, clip_rx) = channel();
         sweep_inbox();
         install_fonts(&ctx);
+        let settings = Settings::load();
+        let tray = build_tray(&ctx);
         let now = Instant::now();
         Self {
             ctx,
@@ -950,13 +1060,18 @@ impl ShelfApp {
             assignment_instructions_input: String::new(),
             my_code: None,
             pair_dialog: None,
-            auto_copy: true,
+            auto_copy: settings.auto_copy,
             receiving_paused: false,
-            pinned: false,
+            pinned: settings.pinned,
+            side: settings.side,
+            monitor: settings.monitor,
+            saved_settings: settings,
+            monitors: monitors::list(),
+            monitors_checked: now,
+            _tray: tray,
             styled_dark: None,
             cur_w: COLLAPSED_W,
-            applied_w: -1.0,
-            positioned: false,
+            last_geo: None,
             last_active: now - Duration::from_secs(10),
             open_until: now,
         }
@@ -1173,27 +1288,62 @@ impl ShelfApp {
         });
     }
 
+    /// Index into `self.monitors` of the screen the shelf sits on.
+    fn monitor_index(&self) -> usize {
+        if self.monitor < self.monitors.len() {
+            self.monitor
+        } else {
+            self.monitors.iter().position(|m| m.primary).unwrap_or(0)
+        }
+    }
+
     fn apply_geometry(&mut self, ctx: &egui::Context, expanded: bool) {
-        let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) else {
-            ctx.request_repaint_after(Duration::from_millis(100));
-            return;
-        };
+        if self.monitors_checked.elapsed() > Duration::from_secs(2) {
+            self.monitors = monitors::list();
+            self.monitors_checked = Instant::now();
+        }
         let target_w = if expanded { EXPANDED_W } else { COLLAPSED_W };
-        let h = (monitor.y - 120.0).clamp(460.0, 760.0);
         if (self.cur_w - target_w).abs() < 0.5 {
             self.cur_w = target_w;
         } else {
             self.cur_w += (target_w - self.cur_w) * 0.35;
             ctx.request_repaint();
         }
-        if !self.positioned || (self.cur_w - self.applied_w).abs() > 0.01 {
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(self.cur_w, h)));
-            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
-                monitor.x - self.cur_w,
-                (monitor.y - h) / 2.0,
-            )));
-            self.applied_w = self.cur_w;
-            self.positioned = true;
+
+        // Monitor rectangles are physical pixels; window commands are in egui points.
+        let ppp = ctx.pixels_per_point();
+        let (h, pos) = match self.monitors.get(self.monitor_index()) {
+            Some(m) => {
+                let h = (m.height / ppp - 120.0).clamp(460.0, 760.0);
+                let x = match self.side {
+                    Side::Right => m.left + m.width - self.cur_w * ppp,
+                    Side::Left => m.left,
+                };
+                let y = m.top + (m.height - h * ppp) / 2.0;
+                (h, pos2(x / ppp, y / ppp))
+            }
+            None => {
+                let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) else {
+                    ctx.request_repaint_after(Duration::from_millis(100));
+                    return;
+                };
+                let h = (monitor.y - 120.0).clamp(460.0, 760.0);
+                let x = match self.side {
+                    Side::Right => monitor.x - self.cur_w,
+                    Side::Left => 0.0,
+                };
+                (h, pos2(x, (monitor.y - h) / 2.0))
+            }
+        };
+        let size = vec2(self.cur_w, h);
+        let changed = match self.last_geo {
+            Some((s, p)) => (s - size).abs().max_elem() > 0.01 || (p - pos).abs().max_elem() > 0.01,
+            None => true,
+        };
+        if changed {
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
+            self.last_geo = Some((size, pos));
         }
     }
 }
@@ -1273,6 +1423,15 @@ impl eframe::App for ShelfApp {
         }
 
         self.drain_events();
+
+        // Requests from the tray icon.
+        if TRAY_QUIT.swap(false, Ordering::SeqCst) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        if TRAY_SHOW.swap(false, Ordering::SeqCst) {
+            self.open_for(8);
+        }
+
         if let Some((room_id, invite_code)) = parse_room_invite(&self.room_code_input)
             .or_else(|| parse_room_invite(&self.room_id_input))
         {
@@ -1342,6 +1501,14 @@ impl eframe::App for ShelfApp {
         self.apply_geometry(ctx, expanded);
 
         let collapsed = self.cur_w < 80.0;
+        let side = self.side;
+        let current_monitor = self.monitor_index();
+        let monitor_names: Vec<String> = self
+            .monitors
+            .iter()
+            .enumerate()
+            .map(|(i, m)| format!("Screen {}{}", i + 1, if m.primary { " (main)" } else { "" }))
+            .collect();
         let paired = self.paired.clone();
         let nearby = self.nearby.clone();
         let rooms = self.rooms.clone();
@@ -1352,10 +1519,11 @@ impl eframe::App for ShelfApp {
 
             if collapsed {
                 // A slim grabber at the screen edge; it turns blue when something is waiting.
-                let pill = Rect::from_center_size(
-                    Pos2::new(full.right() - 6.0, full.center().y),
-                    vec2(5.0, 76.0),
-                );
+                let pill_x = match side {
+                    Side::Right => full.right() - 6.0,
+                    Side::Left => full.left() + 6.0,
+                };
+                let pill = Rect::from_center_size(Pos2::new(pill_x, full.center().y), vec2(5.0, 76.0));
                 let col = if self.items.is_empty() {
                     if p.dark { Color32::from_white_alpha(120) } else { Color32::from_black_alpha(90) }
                 } else {
@@ -1561,6 +1729,25 @@ impl eframe::App for ShelfApp {
                             self.handle
                                 .send(Command::SetReceivingPaused(self.receiving_paused));
                         }
+                        hairline(ui);
+                        ui.label(RichText::new("Screen edge").size(13.5).color(p.text));
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                            for (s, label) in [(Side::Left, "Left"), (Side::Right, "Right")] {
+                                let look = if self.side == s { Look::Primary } else { Look::Glass };
+                                if capsule(ui, label, look, 28.0, None, true).clicked() {
+                                    self.side = s;
+                                }
+                            }
+                            if monitor_names.len() > 1 {
+                                for (i, name) in monitor_names.iter().enumerate() {
+                                    let look = if current_monitor == i { Look::Primary } else { Look::Glass };
+                                    if capsule(ui, name, look, 28.0, None, true).clicked() {
+                                        self.monitor = i;
+                                    }
+                                }
+                            }
+                        });
                     });
 
                     // Collaboration rooms.
@@ -2628,6 +2815,18 @@ impl eframe::App for ShelfApp {
                     let _ = std::fs::remove_file(p);
                 }
             }
+        }
+
+        // Remember the user's preferences between runs.
+        let current = Settings {
+            side: self.side,
+            monitor: self.monitor,
+            auto_copy: self.auto_copy,
+            pinned: self.pinned,
+        };
+        if current != self.saved_settings {
+            current.save();
+            self.saved_settings = current;
         }
 
         // Keeps countdowns and expiry ticking even when nothing else happens.
