@@ -8,8 +8,8 @@ use eframe::egui::{
     Rounding, Stroke, Vec2,
 };
 use shelf_core::{
-    Command, Event, Handle, ItemKind, NearbyDevice, Payload, PeerStatus, ReceivedItem, Target,
-    Room, RoomRole, RoomUpdate, TransferDirection,
+    Command, DeviceGroup, Event, Handle, ItemKind, NearbyDevice, Payload, PeerStatus, ReceivedItem,
+    Room, RoomRole, RoomUpdate, Target, TransferDirection,
 };
 use std::cell::Cell;
 use std::net::SocketAddr;
@@ -910,6 +910,9 @@ enum Action {
     SubmitRoomFile { room_id: String },
     CreateAssignment { room_id: String },
     UpdateRoom { room_id: String, update: RoomUpdate },
+    ChooseReceiveFolder,
+    SaveDeviceGroup,
+    UseDeviceGroup(DeviceGroup),
 }
 
 struct ShelfApp {
@@ -922,6 +925,8 @@ struct ShelfApp {
     device_name: String,
     device_public_key: String,
     paired: Vec<PeerStatus>,
+    device_groups: Vec<DeviceGroup>,
+    receive_dir: Option<PathBuf>,
     nearby: Vec<NearbyDevice>,
     items: Vec<ShelfItem>,
     target: Target,
@@ -942,6 +947,7 @@ struct ShelfApp {
     room_link_title_input: String,
     room_link_url_input: String,
     room_expiration_input: String,
+    group_name_input: String,
     assignment_title_input: String,
     assignment_deadline_input: String,
     assignment_instructions_input: String,
@@ -1035,6 +1041,8 @@ impl ShelfApp {
             device_name: String::new(),
             device_public_key: String::new(),
             paired: Vec::new(),
+            device_groups: Vec::new(),
+            receive_dir: None,
             nearby: Vec::new(),
             items: Vec::new(),
             target: Target::All,
@@ -1055,6 +1063,7 @@ impl ShelfApp {
             room_link_title_input: String::new(),
             room_link_url_input: String::new(),
             room_expiration_input: String::new(),
+            group_name_input: String::new(),
             assignment_title_input: String::new(),
             assignment_deadline_input: String::new(),
             assignment_instructions_input: String::new(),
@@ -1179,6 +1188,8 @@ impl ShelfApp {
                     self.device_name = device_name;
                     self.device_public_key = public_key;
                 }
+                Event::DeviceGroups(groups) => self.device_groups = groups,
+                Event::ReceiveDirectory(path) => self.receive_dir = path,
                 Event::Peers { paired, nearby } => {
                     self.paired = paired;
                     self.nearby = nearby;
@@ -1511,6 +1522,8 @@ impl eframe::App for ShelfApp {
             .collect();
         let paired = self.paired.clone();
         let nearby = self.nearby.clone();
+        let device_groups = self.device_groups.clone();
+        let receive_dir = self.receive_dir.clone();
         let rooms = self.rooms.clone();
         let mut actions: Vec<Action> = Vec::new();
 
@@ -1735,6 +1748,40 @@ impl eframe::App for ShelfApp {
                             self.handle
                                 .send(Command::SetReceivingPaused(self.receiving_paused));
                         }
+                        hairline(ui);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Download location").size(13.5).color(p.text));
+                            if capsule(ui, "Choose folder", Look::Glass, 28.0, None, true).clicked() {
+                                actions.push(Action::ChooseReceiveFolder);
+                            }
+                        });
+                        ui.label(
+                            RichText::new(receive_dir
+                                .as_ref()
+                                .map(|path| path.display().to_string())
+                                .unwrap_or_else(|| shelf_core::inbox_dir().display().to_string()))
+                            .size(10.5)
+                            .color(p.text2),
+                        );
+                        hairline(ui);
+                        ui.label(RichText::new("Device groups").size(13.5).color(p.text));
+                        ui.horizontal_wrapped(|ui| {
+                            for group in &device_groups {
+                                if capsule(ui, &group.name, Look::Glass, 28.0, None, true).clicked() {
+                                    actions.push(Action::UseDeviceGroup(group.clone()));
+                                }
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.group_name_input)
+                                    .hint_text("New group name")
+                                    .desired_width(ui.available_width() - 96.0),
+                            );
+                            if capsule(ui, "Save group", Look::Glass, 28.0, Some(88.0), !self.group_name_input.trim().is_empty()).clicked() {
+                                actions.push(Action::SaveDeviceGroup);
+                            }
+                        });
                         hairline(ui);
                         ui.label(RichText::new("Screen edge").size(13.5).color(p.text));
                         ui.horizontal_wrapped(|ui| {
@@ -2790,6 +2837,34 @@ impl eframe::App for ShelfApp {
                     self.assignment_title_input.clear();
                     self.assignment_deadline_input.clear();
                     self.assignment_instructions_input.clear();
+                }
+                Action::ChooseReceiveFolder => {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_title("Choose download folder")
+                        .pick_folder()
+                    {
+                        self.handle.send(Command::SetReceiveDirectory(path));
+                    }
+                }
+                Action::SaveDeviceGroup => {
+                    let members = match &self.target {
+                        Target::All => self.paired.iter().map(|peer| peer.public_key.clone()).collect(),
+                        Target::Peer(key) => vec![key.clone()],
+                        Target::Peers(keys) => keys.clone(),
+                    };
+                    self.handle.send(Command::SaveDeviceGroup(DeviceGroup {
+                        name: self.group_name_input.trim().to_string(),
+                        members,
+                    }));
+                    self.group_name_input.clear();
+                }
+                Action::UseDeviceGroup(group) => {
+                    self.target = match group.members.len() {
+                        0 => Target::All,
+                        1 => Target::Peer(group.members[0].clone()),
+                        _ => Target::Peers(group.members),
+                    };
+                    self.set_status(format!("Device group active: {}", group.name));
                 }
                 Action::UpdateRoom { room_id, update } => {
                     if matches!(update, RoomUpdate::AddAnnouncement { .. }) {

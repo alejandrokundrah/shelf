@@ -7,7 +7,7 @@ use crate::protocol::{
     ItemHeader, ItemKind, RoomFileRecord, RoomMemberRecord, RoomMessage, CHUNK, MAX_FILE_BYTES,
     MAX_TEXT_BYTES,
 };
-use crate::store::{inbox_dir, Config, PairedPeer, Room, RoomUpdate};
+use crate::store::{inbox_dir, Config, DeviceGroup, PairedPeer, Room, RoomUpdate};
 use anyhow::{anyhow, bail, Context, Result};
 use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
@@ -74,6 +74,8 @@ pub enum Command {
     Unpair { public_key: String },
     Send { target: Target, payload: Payload },
     SetReceivingPaused(bool),
+    SetReceiveDirectory(PathBuf),
+    SaveDeviceGroup(DeviceGroup),
     CancelTransfers,
     Shutdown,
 }
@@ -120,6 +122,8 @@ pub enum Event {
     },
     Ready { device_name: String, public_key: String },
     Peers { paired: Vec<PeerStatus>, nearby: Vec<NearbyDevice> },
+    DeviceGroups(Vec<DeviceGroup>),
+    ReceiveDirectory(Option<PathBuf>),
     PairingCode { code: String, seconds: u64 },
     PairingCleared,
     PairingResult(Result<String, String>),
@@ -278,6 +282,19 @@ impl Shared {
         match result {
             Ok(room) => self.emit(Event::RoomUpdated(room)),
             Err(e) => self.emit(Event::Error(format!("could not create room: {e}"))),
+        }
+    }
+
+    fn save_device_group(&self, group: DeviceGroup) {
+        let result = {
+            let mut config = self.config.lock().unwrap();
+            config.device_groups.retain(|existing| existing.name != group.name);
+            config.device_groups.push(group);
+            config.save().map(|()| config.device_groups.clone())
+        };
+        match result {
+            Ok(groups) => self.emit(Event::DeviceGroups(groups)),
+            Err(error) => self.emit(Event::Error(format!("could not save device group: {error}"))),
         }
     }
 
@@ -473,6 +490,11 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
         device_name: name.clone(),
         public_key: public_key.clone(),
     });
+    {
+        let config = shared.config.lock().unwrap();
+        shared.emit(Event::DeviceGroups(config.device_groups.clone()));
+        shared.emit(Event::ReceiveDirectory(config.receive_dir.clone()));
+    }
 
     let daemon = match start_discovery(&shared, &name, &public_key, port) {
         Ok(d) => Some(d),
@@ -682,6 +704,18 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                     "Receiving resumed".into()
                 }));
             }
+            Command::SetReceiveDirectory(path) => {
+                let result = {
+                    let mut config = shared.config.lock().unwrap();
+                    config.receive_dir = Some(path.clone());
+                    config.save()
+                };
+                match result {
+                    Ok(()) => shared.emit(Event::ReceiveDirectory(Some(path))),
+                    Err(error) => shared.emit(Event::Error(format!("could not save receive folder: {error}"))),
+                }
+            }
+            Command::SaveDeviceGroup(group) => shared.save_device_group(group),
             Command::CancelTransfers => {
                 shared.cancel_transfers.store(true, Ordering::SeqCst);
                 shared.emit(Event::Info("Cancelling transfers...".into()));
@@ -1364,11 +1398,12 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
         let text = String::from_utf8(text_bytes).map_err(|_| anyhow!("text was not valid UTF-8"))?;
         (None, Some(text))
     } else {
+        let configured_receive_dir = shared.config.lock().unwrap().receive_dir.clone();
         let base = header
             .room_id
             .as_deref()
             .map(crate::store::room_dir)
-            .unwrap_or_else(inbox_dir);
+            .unwrap_or_else(|| configured_receive_dir.unwrap_or_else(inbox_dir));
         tokio::fs::create_dir_all(&base).await?;
         let partial = base.join(format!(".shelf-{}.part", hex::encode(header.hash)));
         let offset = tokio::fs::metadata(&partial)
