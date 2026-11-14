@@ -634,6 +634,7 @@ enum Action {
     DeleteRoomFile { room_id: String, hash: String },
     RequestRoomFile { room_id: String },
     SubmitRoomFile { room_id: String },
+    CreateAssignment { room_id: String },
 }
 
 struct ShelfApp {
@@ -659,6 +660,9 @@ struct ShelfApp {
     room_code_input: String,
     room_request_input: String,
     room_assignment_input: String,
+    assignment_title_input: String,
+    assignment_deadline_input: String,
+    assignment_instructions_input: String,
     my_code: Option<(String, Instant)>,
     pair_dialog: Option<PairDialog>,
 
@@ -754,6 +758,9 @@ impl ShelfApp {
             room_code_input: String::new(),
             room_request_input: String::new(),
             room_assignment_input: String::new(),
+            assignment_title_input: String::new(),
+            assignment_deadline_input: String::new(),
+            assignment_instructions_input: String::new(),
             my_code: None,
             pair_dialog: None,
             auto_copy: true,
@@ -1551,6 +1558,47 @@ impl eframe::App for ShelfApp {
                                                 }
                                             });
                                         }
+                                        if room.owner_public_key == self.device_public_key {
+                                            ui.add_space(4.0);
+                                            ui.label(
+                                                RichText::new("Teacher assignment")
+                                                    .size(12.0)
+                                                    .color(p.text2),
+                                            );
+                                            ui.add(
+                                                egui::TextEdit::singleline(
+                                                    &mut self.assignment_title_input,
+                                                )
+                                                .hint_text("Title"),
+                                            );
+                                            ui.add(
+                                                egui::TextEdit::singleline(
+                                                    &mut self.assignment_deadline_input,
+                                                )
+                                                .hint_text("Deadline (Unix seconds)"),
+                                            );
+                                            ui.add(
+                                                egui::TextEdit::multiline(
+                                                    &mut self.assignment_instructions_input,
+                                                )
+                                                .hint_text("Instructions")
+                                                .desired_rows(2),
+                                            );
+                                            if capsule(
+                                                ui,
+                                                "Create assignment",
+                                                Look::Primary,
+                                                28.0,
+                                                Some(ui.available_width()),
+                                                !self.assignment_title_input.trim().is_empty(),
+                                            )
+                                            .clicked()
+                                            {
+                                                actions.push(Action::CreateAssignment {
+                                                    room_id: room.id.clone(),
+                                                });
+                                            }
+                                        }
                                     }
                                 }
                             });
@@ -1990,6 +2038,23 @@ impl eframe::App for ShelfApp {
                         self.room_assignment_input.trim()
                     ));
                     self.active_room_id = Some(room_id);
+                }
+                Action::CreateAssignment { room_id } => {
+                    let deadline = self
+                        .assignment_deadline_input
+                        .trim()
+                        .parse::<u64>()
+                        .unwrap_or_default();
+                    self.handle.send(Command::CreateAssignment {
+                        room_id,
+                        title: self.assignment_title_input.trim().to_string(),
+                        deadline,
+                        instructions: self.assignment_instructions_input.trim().to_string(),
+                        required_files: Vec::new(),
+                    });
+                    self.assignment_title_input.clear();
+                    self.assignment_deadline_input.clear();
+                    self.assignment_instructions_input.clear();
                 }
             }
         }

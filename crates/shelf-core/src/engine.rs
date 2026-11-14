@@ -45,6 +45,13 @@ pub enum Payload {
 
 pub enum Command {
     CreateRoom { name: String },
+    CreateAssignment {
+        room_id: String,
+        title: String,
+        deadline: u64,
+        instructions: String,
+        required_files: Vec<String>,
+    },
     JoinRoom {
         addr: SocketAddr,
         room_id: String,
@@ -261,6 +268,41 @@ impl Shared {
         }
     }
 
+    fn create_assignment(
+        &self,
+        room_id: String,
+        title: String,
+        deadline: u64,
+        instructions: String,
+        required_files: Vec<String>,
+    ) {
+        let result = {
+            let mut config = self.config.lock().unwrap();
+            let owner = config.public_key.clone();
+            let updated_room = {
+                let room = config.rooms.iter_mut().find(|room| room.id == room_id);
+                let Some(room) = room else {
+                    return self.emit(Event::Error("room not found".into()));
+                };
+                let Some(_) =
+                    room.create_assignment(&owner, title, deadline, instructions, required_files)
+                else {
+                    return self.emit(Event::Error(
+                        "only the room owner can create assignments".into(),
+                    ));
+                };
+                room.clone()
+            };
+            config.save().map(|()| updated_room)
+        };
+        match result {
+            Ok(room) => self.emit(Event::RoomUpdated(room)),
+            Err(error) => self.emit(Event::Error(format!(
+                "could not save assignment: {error}"
+            ))),
+        }
+    }
+
     fn finish_send(&self, to: &str, item: String, res: Result<()>) {
         self.emit(Event::SendDone {
             to: to.to_string(),
@@ -410,6 +452,19 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
         match cmd {
             Command::Shutdown => break,
             Command::CreateRoom { name } => shared.create_room(name),
+            Command::CreateAssignment {
+                room_id,
+                title,
+                deadline,
+                instructions,
+                required_files,
+            } => shared.create_assignment(
+                room_id,
+                title,
+                deadline,
+                instructions,
+                required_files,
+            ),
             Command::JoinRoom {
                 addr,
                 room_id,
