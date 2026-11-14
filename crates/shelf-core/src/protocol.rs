@@ -73,6 +73,8 @@ pub enum RoomMessage {
     Request {
         room_id: String,
         name: String,
+        #[serde(default)]
+        hash: Option<String>,
     },
     Submit {
         room_id: String,

@@ -498,7 +498,7 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                     shared.emit(Event::Error("Room owner is not nearby".into()));
                 } else {
                     let s = shared.clone();
-                    tokio::spawn(send_room_request(s, targets, room_id, name));
+                    tokio::spawn(send_room_request(s, targets, room_id, name, None));
                 }
             }
             Command::SubmitRoomFile {
@@ -682,7 +682,12 @@ async fn handle_room_connection(shared: &Arc<Shared>, stream: TcpStream) -> Resu
         ch.send(b"OK").await?;
         return Ok(());
     }
-    if let RoomMessage::Request { room_id, name } = message {
+    if let RoomMessage::Request {
+        room_id,
+        name,
+        hash,
+    } = message
+    {
         let known_member = {
             let config = shared.config.lock().unwrap();
             config
@@ -696,6 +701,36 @@ async fn handle_room_connection(shared: &Arc<Shared>, stream: TcpStream) -> Resu
             bail!("room request rejected from a non-member");
         }
         ch.send(b"OK").await?;
+        if let Some(hash) = hash {
+            let transfer = {
+                let config = shared.config.lock().unwrap();
+                config
+                    .rooms
+                    .iter()
+                    .find(|room| room.id == room_id)
+                    .and_then(|room| {
+                        room.files
+                            .iter()
+                            .find(|file| file.hash == hash)
+                            .map(|file| {
+                                (
+                                    crate::store::room_dir(&room_id).join(&file.name),
+                                    file.submission.clone(),
+                                )
+                            })
+                    })
+            };
+            if let Some((path, submission)) = transfer {
+                let targets = shared.targets(&Target::Peer(hex::encode(&ch.remote_static)));
+                tokio::spawn(send_room_file(
+                    shared.clone(),
+                    targets,
+                    room_id.clone(),
+                    path,
+                    submission,
+                ));
+            }
+        }
         shared.emit(Event::RoomRequest {
             room_id,
             name,
@@ -807,6 +842,7 @@ async fn send_room_request(
     targets: Vec<Dest>,
     room_id: String,
     name: String,
+    hash: Option<String>,
 ) {
     for dest in targets {
         let result = async {
@@ -820,6 +856,7 @@ async fn send_room_request(
                 &serde_json::to_vec(&RoomMessage::Request {
                     room_id: room_id.clone(),
                     name: name.clone(),
+                    hash: hash.clone(),
                 })?,
             )
             .await?;
@@ -902,14 +939,30 @@ async fn join_room(
             })
             .collect(),
     };
-    let mut config = shared.config.lock().unwrap();
-    if let Some(existing) = config.rooms.iter_mut().find(|existing| existing.id == room.id) {
-        *existing = room.clone();
-    } else {
-        config.rooms.push(room.clone());
+    let owner_key = room.owner_public_key.clone();
+    let room_files = room.files.clone();
+    let room_id_for_sync = room.id.clone();
+    {
+        let mut config = shared.config.lock().unwrap();
+        if let Some(existing) = config.rooms.iter_mut().find(|existing| existing.id == room.id) {
+            *existing = room.clone();
+        } else {
+            config.rooms.push(room.clone());
+        }
+        config.save()?;
     }
-    config.save()?;
     shared.emit(Event::RoomUpdated(room));
+    for file in room_files {
+        let owner_targets = shared.targets(&Target::Peer(owner_key.clone()));
+        send_room_request(
+            shared.clone(),
+            owner_targets,
+            room_id_for_sync.clone(),
+            file.name,
+            Some(file.hash),
+        )
+        .await;
+    }
     Ok(())
 }
 
