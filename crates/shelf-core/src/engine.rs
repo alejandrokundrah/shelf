@@ -79,6 +79,8 @@ pub enum Command {
     ExportRoomBackup { room_id: String, path: PathBuf },
     ImportRoomBackup { path: PathBuf },
     CancelTransfers,
+    /// Cancel one transfer. A cancelled download keeps its partial file so a re-send resumes it.
+    CancelTransfer { direction: TransferDirection, name: String, peer: String },
     Shutdown,
 }
 
@@ -178,6 +180,7 @@ struct Shared {
     next_id: AtomicU64,
     receiving_paused: std::sync::atomic::AtomicBool,
     cancel_transfers: std::sync::atomic::AtomicBool,
+    cancelled: Mutex<HashSet<String>>,
     received_hashes: Mutex<HashSet<[u8; 32]>>,
 }
 
@@ -409,6 +412,22 @@ impl Shared {
         }
     }
 
+    fn cancel_key(direction: TransferDirection, name: &str, peer: &str) -> String {
+        format!("{direction:?}|{name}|{peer}")
+    }
+
+    /// True when this transfer, or all transfers, should stop. A single-transfer request is
+    /// consumed so a later retry of the same file is not cancelled again.
+    fn cancel_requested(&self, direction: TransferDirection, name: &str, peer: &str) -> bool {
+        if self.cancel_transfers.load(Ordering::SeqCst) {
+            return true;
+        }
+        self.cancelled
+            .lock()
+            .unwrap()
+            .remove(&Self::cancel_key(direction, name, peer))
+    }
+
     fn finish_send(&self, to: &str, item: String, res: Result<()>) {
         self.emit(Event::SendDone {
             to: to.to_string(),
@@ -461,6 +480,7 @@ pub fn start(wake: impl Fn() + Send + Sync + 'static) -> Result<(Handle, Receive
         next_id: AtomicU64::new(1),
         receiving_paused: std::sync::atomic::AtomicBool::new(false),
         cancel_transfers: std::sync::atomic::AtomicBool::new(false),
+        cancelled: Mutex::new(HashSet::new()),
         received_hashes: Mutex::new(HashSet::new()),
     });
     std::thread::Builder::new()
@@ -794,6 +814,14 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
             Command::SaveDeviceGroup(group) => shared.save_device_group(group),
             Command::ExportRoomBackup { room_id, path } => shared.export_room_backup(room_id, path),
             Command::ImportRoomBackup { path } => shared.import_room_backup(path),
+            Command::CancelTransfer { direction, name, peer } => {
+                shared
+                    .cancelled
+                    .lock()
+                    .unwrap()
+                    .insert(Shared::cancel_key(direction, &name, &peer));
+                shared.emit(Event::Info(format!("Cancelling {name}...")));
+            }
             Command::CancelTransfers => {
                 shared.cancel_transfers.store(true, Ordering::SeqCst);
                 shared.emit(Event::Info("Cancelling transfers...".into()));
@@ -1367,7 +1395,7 @@ async fn receive_to_file(
     let mut done = offset;
     let mut last_percent = if size == 0 { 0 } else { ((offset * 100) / size) as u8 };
     while left > 0 {
-        if shared.cancel_transfers.load(Ordering::SeqCst) {
+        if shared.cancel_requested(TransferDirection::Download, name, peer) {
             bail!("transfer cancelled");
         }
         let chunk = ch.recv().await?;
@@ -1404,6 +1432,8 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
     if shared.receiving_paused.load(Ordering::SeqCst) {
         bail!("receiving is paused");
     }
+    // A "cancel all" only applies to transfers already running; don't let it block new ones.
+    shared.cancel_transfers.store(false, Ordering::SeqCst);
     let key = shared.private_key()?;
     let mut ch = timeout(Duration::from_secs(10), SecureChannel::accept(stream, &key)).await??;
 
@@ -1436,7 +1466,7 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
         let mut done = 0;
         let mut last_percent = 0;
         while left > 0 {
-            if shared.cancel_transfers.load(Ordering::SeqCst) {
+            if shared.cancel_requested(TransferDirection::Download, &header.name, &peer.name) {
                 bail!("transfer cancelled");
             }
             let chunk = ch.recv().await?;
@@ -1612,10 +1642,7 @@ async fn push_item<R: AsyncRead + Unpin>(
         ((offset * 100) / header.size) as u8
     };
     while left > 0 {
-        if shared.cancel_transfers.load(Ordering::SeqCst) {
-            bail!("transfer cancelled");
-        }
-        if shared.cancel_transfers.load(Ordering::SeqCst) {
+        if shared.cancel_requested(TransferDirection::Upload, label, &dest.name) {
             bail!("transfer cancelled");
         }
         let want = std::cmp::min(left, CHUNK as u64) as usize;
@@ -1689,7 +1716,8 @@ async fn send_file(
         original_name: Some(prepared.original_name.clone()),
     };
     let mut last_error = None;
-    for attempt in 0..3 {
+    const ATTEMPTS: u32 = 6;
+    for attempt in 0..ATTEMPTS {
         let file = tokio::fs::File::open(&source_path)
             .await
             .with_context(|| format!("source file disappeared before sending: {}", path.display()))?;
@@ -1704,8 +1732,15 @@ async fn send_file(
                     return Err(e);
                 }
                 last_error = Some(e);
-                if attempt < 2 {
-                    tokio::time::sleep(Duration::from_millis(500)).await;
+                if attempt + 1 < ATTEMPTS {
+                    let wait = Duration::from_secs((1u64 << attempt).min(15));
+                    shared.emit(Event::Info(format!(
+                        "Connection to {} lost, resuming {} in {}s...",
+                        dest.name,
+                        label,
+                        wait.as_secs()
+                    )));
+                    tokio::time::sleep(wait).await;
                 }
             }
         }
