@@ -8,7 +8,7 @@ use eframe::egui::{
 };
 use shelf_core::{
     Command, Event, Handle, ItemKind, NearbyDevice, Payload, PeerStatus, ReceivedItem, Target,
-    Room, TransferDirection,
+    Room, RoomRole, RoomUpdate, TransferDirection,
 };
 use std::cell::Cell;
 use std::net::SocketAddr;
@@ -635,6 +635,7 @@ enum Action {
     RequestRoomFile { room_id: String },
     SubmitRoomFile { room_id: String },
     CreateAssignment { room_id: String },
+    UpdateRoom { room_id: String, update: RoomUpdate },
 }
 
 struct ShelfApp {
@@ -660,6 +661,8 @@ struct ShelfApp {
     room_code_input: String,
     room_request_input: String,
     room_assignment_input: String,
+    room_announcement_input: String,
+    room_clipboard_input: String,
     assignment_title_input: String,
     assignment_deadline_input: String,
     assignment_instructions_input: String,
@@ -758,6 +761,8 @@ impl ShelfApp {
             room_code_input: String::new(),
             room_request_input: String::new(),
             room_assignment_input: String::new(),
+            room_announcement_input: String::new(),
+            room_clipboard_input: String::new(),
             assignment_title_input: String::new(),
             assignment_deadline_input: String::new(),
             assignment_instructions_input: String::new(),
@@ -1442,6 +1447,61 @@ impl eframe::App for ShelfApp {
                                 });
                                 ui.horizontal(|ui| {
                                     ui.add(
+                                        egui::TextEdit::singleline(&mut self.room_announcement_input)
+                                            .hint_text("Team announcement")
+                                            .desired_width(ui.available_width() - 86.0),
+                                    );
+                                    if capsule(
+                                        ui,
+                                        "Announce",
+                                        Look::Primary,
+                                        28.0,
+                                        Some(74.0),
+                                        self.active_room_id.is_some()
+                                            && !self.room_announcement_input.trim().is_empty(),
+                                    )
+                                    .clicked()
+                                    {
+                                        if let Some(room_id) = self.active_room_id.clone() {
+                                            actions.push(Action::UpdateRoom {
+                                                room_id,
+                                                update: RoomUpdate::AddAnnouncement {
+                                                    message: self.room_announcement_input.trim().to_string(),
+                                                    pinned: true,
+                                                },
+                                            });
+                                        }
+                                    }
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.room_clipboard_input)
+                                            .hint_text("Shared clipboard entry")
+                                            .desired_width(ui.available_width() - 86.0),
+                                    );
+                                    if capsule(
+                                        ui,
+                                        "Share text",
+                                        Look::Glass,
+                                        28.0,
+                                        Some(74.0),
+                                        self.active_room_id.is_some()
+                                            && !self.room_clipboard_input.trim().is_empty(),
+                                    )
+                                    .clicked()
+                                    {
+                                        if let Some(room_id) = self.active_room_id.clone() {
+                                            actions.push(Action::UpdateRoom {
+                                                room_id,
+                                                update: RoomUpdate::AddClipboard {
+                                                    content: self.room_clipboard_input.trim().to_string(),
+                                                },
+                                            });
+                                        }
+                                    }
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.add(
                                         egui::TextEdit::singleline(&mut self.room_id_input)
                                             .hint_text("Room ID")
                                             .desired_width(ui.available_width() * 0.48),
@@ -1558,6 +1618,39 @@ impl eframe::App for ShelfApp {
                                                     .size(11.5)
                                                     .color(p.text2),
                                                 );
+                                                if let Some(locker) = &file.locked_by {
+                                                    ui.label(
+                                                        RichText::new(format!(
+                                                            "Locked by {}",
+                                                            shorten(locker, 10)
+                                                        ))
+                                                        .size(10.5)
+                                                        .color(p.orange),
+                                                    );
+                                                }
+                                                let can_edit = room.can_edit(&self.device_public_key);
+                                                let mine = file.locked_by.as_deref() == Some(self.device_public_key.as_str());
+                                                if can_edit
+                                                    && (file.locked_by.is_none() || mine)
+                                                    && capsule(
+                                                        ui,
+                                                        if mine { "Unlock" } else { "Lock" },
+                                                        Look::Glass,
+                                                        22.0,
+                                                        None,
+                                                        true,
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    actions.push(Action::UpdateRoom {
+                                                        room_id: room.id.clone(),
+                                                        update: if mine {
+                                                            RoomUpdate::UnlockFile { hash: file.hash.clone() }
+                                                        } else {
+                                                            RoomUpdate::LockFile { hash: file.hash.clone() }
+                                                        },
+                                                    });
+                                                }
                                                 if room.owner_public_key == self.device_public_key
                                                     && capsule(
                                                         ui,
@@ -1576,7 +1669,106 @@ impl eframe::App for ShelfApp {
                                                 }
                                             });
                                         }
+                                        if !room.announcements.is_empty() {
+                                            ui.add_space(4.0);
+                                            ui.label(RichText::new("Announcements").size(12.0).color(p.text2));
+                                            for announcement in room.announcements.iter().rev().take(5) {
+                                                ui.horizontal(|ui| {
+                                                    ui.label(
+                                                        RichText::new(format!(
+                                                            "{}{}",
+                                                            if announcement.pinned { "📌 " } else { "" },
+                                                            announcement.message
+                                                        ))
+                                                        .size(11.5)
+                                                        .color(p.text),
+                                                    );
+                                                    if room.can_edit(&self.device_public_key)
+                                                        && capsule(
+                                                            ui,
+                                                            if announcement.pinned { "Unpin" } else { "Pin" },
+                                                            Look::Glass,
+                                                            22.0,
+                                                            None,
+                                                            true,
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        actions.push(Action::UpdateRoom {
+                                                            room_id: room.id.clone(),
+                                                            update: RoomUpdate::SetAnnouncementPinned {
+                                                                id: announcement.id.clone(),
+                                                                pinned: !announcement.pinned,
+                                                            },
+                                                        });
+                                                    }
+                                                });
+                                            }
+                                        }
+                                        if !room.clipboard.is_empty() {
+                                            ui.add_space(4.0);
+                                            ui.label(RichText::new("Shared clipboard").size(12.0).color(p.text2));
+                                            for entry in room.clipboard.iter().rev().take(5) {
+                                                ui.horizontal(|ui| {
+                                                    ui.label(
+                                                        RichText::new(shorten(&entry.content, 42))
+                                                            .size(11.5)
+                                                            .color(p.text),
+                                                    );
+                                                    if capsule(ui, "Copy", Look::Glass, 22.0, None, true).clicked() {
+                                                        let _ = clip::copy_text(&entry.content);
+                                                    }
+                                                    if room.can_edit(&self.device_public_key)
+                                                        && capsule(ui, "Remove", Look::Tint(p.red), 22.0, None, true).clicked()
+                                                    {
+                                                        actions.push(Action::UpdateRoom {
+                                                            room_id: room.id.clone(),
+                                                            update: RoomUpdate::RemoveClipboard { id: entry.id.clone() },
+                                                        });
+                                                    }
+                                                });
+                                            }
+                                        }
+                                        if !room.activity.is_empty() {
+                                            ui.add_space(4.0);
+                                            ui.label(RichText::new("Recent activity").size(12.0).color(p.text2));
+                                            for activity in room.activity.iter().rev().take(5) {
+                                                ui.label(
+                                                    RichText::new(format!(
+                                                        "{} · {}",
+                                                        shorten(&activity.actor, 10),
+                                                        activity.message
+                                                    ))
+                                                    .size(10.5)
+                                                    .color(p.text2),
+                                                );
+                                            }
+                                        }
                                         if room.owner_public_key == self.device_public_key {
+                                            ui.add_space(4.0);
+                                            ui.label(RichText::new("Members and roles").size(12.0).color(p.text2));
+                                            for member in room.members.iter().filter(|member| member.public_key != room.owner_public_key) {
+                                                ui.horizontal(|ui| {
+                                                    ui.label(RichText::new(shorten(&member.name, 18)).size(11.5).color(p.text));
+                                                    let mut selected = member.role;
+                                                    egui::ComboBox::from_id_salt(format!("role-{}-{}", room.id, member.public_key))
+                                                        .selected_text(format!("{:?}", selected))
+                                                        .show_ui(ui, |ui| {
+                                                            for role in [RoomRole::Member, RoomRole::Editor, RoomRole::Contributor, RoomRole::Viewer] {
+                                                                ui.selectable_value(&mut selected, role, format!("{:?}", role));
+                                                            }
+                                                        });
+                                                    if selected != member.role {
+                                                        actions.push(Action::UpdateRoom {
+                                                            room_id: room.id.clone(),
+                                                            update: RoomUpdate::SetMemberRole {
+                                                                public_key: member.public_key.clone(),
+                                                                role: selected,
+                                                            },
+                                                        });
+                                                    }
+                                                });
+                                            }
                                             ui.add_space(4.0);
                                             ui.label(
                                                 RichText::new("Teacher assignment")
@@ -2094,6 +2286,15 @@ impl eframe::App for ShelfApp {
                     self.assignment_title_input.clear();
                     self.assignment_deadline_input.clear();
                     self.assignment_instructions_input.clear();
+                }
+                Action::UpdateRoom { room_id, update } => {
+                    if matches!(update, RoomUpdate::AddAnnouncement { .. }) {
+                        self.room_announcement_input.clear();
+                    }
+                    if matches!(update, RoomUpdate::AddClipboard { .. }) {
+                        self.room_clipboard_input.clear();
+                    }
+                    self.handle.send(Command::UpdateRoom { room_id, update });
                 }
             }
         }

@@ -95,7 +95,7 @@ fn copy_image(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn copy_text(text: &str) -> Result<()> {
+pub fn copy_text(text: &str) -> Result<()> {
     arboard::Clipboard::new()?.set_text(text.to_string())?;
     Ok(())
 }

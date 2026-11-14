@@ -23,6 +23,17 @@ pub enum RoomRole {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum RoomUpdate {
+    AddAnnouncement { message: String, pinned: bool },
+    SetAnnouncementPinned { id: String, pinned: bool },
+    AddClipboard { content: String },
+    RemoveClipboard { id: String },
+    LockFile { hash: String },
+    UnlockFile { hash: String },
+    SetMemberRole { public_key: String, role: RoomRole },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct RoomMember {
     pub name: String,
     pub public_key: String,
@@ -223,6 +234,72 @@ impl Room {
         }
         self.members.push(member);
         true
+    }
+
+    pub fn apply_team_update(&mut self, requester: &str, update: &RoomUpdate, now: u64) -> Option<String> {
+        let message = match update {
+            RoomUpdate::AddAnnouncement { message, pinned } if self.can_edit(requester) => {
+                let message = message.trim();
+                if message.is_empty() {
+                    return None;
+                }
+                self.announcements.push(RoomAnnouncement {
+                    id: format!("announcement-{}", uuid_like_id()),
+                    message: message.to_string(),
+                    pinned: *pinned,
+                    posted_by: requester.to_string(),
+                    posted_at: now,
+                });
+                "posted an announcement".to_string()
+            }
+            RoomUpdate::SetAnnouncementPinned { id, pinned } if self.can_edit(requester) => {
+                let announcement = self.announcements.iter_mut().find(|item| item.id == *id)?;
+                announcement.pinned = *pinned;
+                if *pinned { "pinned an announcement" } else { "unpinned an announcement" }.to_string()
+            }
+            RoomUpdate::AddClipboard { content } if self.can_upload(requester) => {
+                let content = content.trim();
+                if content.is_empty() || content.len() > 1024 * 1024 {
+                    return None;
+                }
+                self.clipboard.push(ClipboardEntry {
+                    id: format!("clipboard-{}", uuid_like_id()),
+                    content: content.to_string(),
+                    added_by: requester.to_string(),
+                    added_at: now,
+                });
+                "added a shared clipboard entry".to_string()
+            }
+            RoomUpdate::RemoveClipboard { id } if self.can_edit(requester) => {
+                let before = self.clipboard.len();
+                self.clipboard.retain(|item| item.id != *id);
+                (self.clipboard.len() != before).then(|| "removed a shared clipboard entry".to_string())?
+            }
+            RoomUpdate::LockFile { hash } if self.lock_file(requester, hash) => {
+                "locked a file".to_string()
+            }
+            RoomUpdate::UnlockFile { hash } if self.unlock_file(requester, hash) => {
+                "unlocked a file".to_string()
+            }
+            RoomUpdate::SetMemberRole { public_key, role }
+                if self.can_delete(requester)
+                    && *public_key != self.owner_public_key
+                    && self.members.iter_mut().find(|member| member.public_key == *public_key).map(|member| member.role = *role).is_some() =>
+            {
+                "changed a member role".to_string()
+            }
+            _ => return None,
+        };
+        self.activity.push(ActivityEntry {
+            message: message.clone(),
+            actor: requester.to_string(),
+            at: now,
+        });
+        if self.activity.len() > 200 {
+            let excess = self.activity.len() - 200;
+            self.activity.drain(..excess);
+        }
+        Some(message)
     }
 
     pub fn add_file(&mut self, file: RoomFile) -> bool {

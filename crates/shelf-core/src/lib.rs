@@ -13,4 +13,4 @@ pub use engine::{
 };
 pub use protocol::{ItemKind, RoomMessage};
 pub use store::{inbox_dir, room_dir};
-pub use store::{Room, RoomFile, RoomMember, RoomRole};
+pub use store::{Room, RoomFile, RoomMember, RoomRole, RoomUpdate};

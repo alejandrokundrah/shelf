@@ -7,7 +7,7 @@ use crate::protocol::{
     ItemHeader, ItemKind, RoomFileRecord, RoomMemberRecord, RoomMessage, CHUNK, MAX_FILE_BYTES,
     MAX_TEXT_BYTES,
 };
-use crate::store::{inbox_dir, Config, PairedPeer, Room};
+use crate::store::{inbox_dir, Config, PairedPeer, Room, RoomUpdate};
 use anyhow::{anyhow, bail, Result};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use rand::Rng;
@@ -52,6 +52,7 @@ pub enum Command {
         instructions: String,
         required_files: Vec<String>,
     },
+    UpdateRoom { room_id: String, update: RoomUpdate },
     JoinRoom {
         addr: SocketAddr,
         room_id: String,
@@ -312,6 +313,33 @@ impl Shared {
     }
 }
 
+fn apply_room_update(
+    shared: &Arc<Shared>,
+    room_id: &str,
+    requester: &str,
+    update: &RoomUpdate,
+) -> Result<(Room, String)> {
+    let mut config = shared.config.lock().unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    let room = config
+        .rooms
+        .iter_mut()
+        .find(|room| room.id == room_id)
+        .ok_or_else(|| anyhow!("room not found"))?;
+    if !room.has_member(requester) {
+        bail!("room update rejected from a non-member");
+    }
+    let Some(activity) = room.apply_team_update(requester, update, now) else {
+        bail!("room update is not allowed for this member");
+    };
+    let snapshot = room.clone();
+    config.save()?;
+    Ok((snapshot, activity))
+}
+
 // ---------------------------------------------------------------- startup
 
 pub fn start(wake: impl Fn() + Send + Sync + 'static) -> Result<(Handle, Receiver<Event>)> {
@@ -465,6 +493,18 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                 instructions,
                 required_files,
             ),
+            Command::UpdateRoom { room_id, update } => {
+                let actor = shared.config.lock().unwrap().public_key.clone();
+                match apply_room_update(&shared, &room_id, &actor, &update) {
+                    Ok((room, activity)) => {
+                        shared.emit(Event::RoomUpdated(room.clone()));
+                        shared.emit(Event::Info(format!("Room {activity}")));
+                        let targets = room_targets(&shared, &room_id);
+                        tokio::spawn(broadcast_room_sync(shared.clone(), targets, room));
+                    }
+                    Err(error) => shared.emit(Event::Error(error.to_string())),
+                }
+            }
             Command::JoinRoom {
                 addr,
                 room_id,
@@ -711,6 +751,36 @@ async fn handle_room_connection(shared: &Arc<Shared>, stream: TcpStream) -> Resu
     }
     .ok_or_else(|| anyhow!("room connection rejected from an unpaired device"))?;
     let message: RoomMessage = serde_json::from_slice(&ch.recv().await?)?;
+    if let RoomMessage::Sync { room } = message {
+        let remote_key = hex::encode(&ch.remote_static);
+        let accepted = {
+            let mut config = shared.config.lock().unwrap();
+            let local = config
+                .rooms
+                .iter_mut()
+                .find(|local| local.id == room.id)
+                .ok_or_else(|| anyhow!("room not found"))?;
+            if local.owner_public_key != room.owner_public_key || !local.has_member(&remote_key) {
+                bail!("room snapshot rejected");
+            }
+            *local = room.clone();
+            config.save()?;
+            room
+        };
+        ch.send(b"OK").await?;
+        shared.emit(Event::RoomUpdated(accepted));
+        return Ok(());
+    }
+    if let RoomMessage::Update { room_id, update } = message {
+        let remote_key = hex::encode(&ch.remote_static);
+        let (room, activity) = apply_room_update(shared, &room_id, &remote_key, &update)?;
+        ch.send(b"OK").await?;
+        let targets = room_targets_except(shared, &room_id, &remote_key);
+        tokio::spawn(broadcast_room_sync(shared.clone(), targets, room.clone()));
+        shared.emit(Event::RoomUpdated(room));
+        shared.emit(Event::Info(format!("{} {}", peer.name, activity)));
+        return Ok(());
+    }
     if let RoomMessage::Delete { room_id, hash } = message {
         let file_name = {
             let mut config = shared.config.lock().unwrap();
@@ -850,6 +920,7 @@ async fn handle_room_connection(shared: &Arc<Shared>, stream: TcpStream) -> Resu
                     submission: file.submission.clone(),
                 })
                 .collect(),
+            room: Some(room.clone()),
         }
     };
     ch.send(&serde_json::to_vec(&manifest)?).await?;
@@ -889,6 +960,26 @@ async fn broadcast_room_delete(
                 "room deletion failed for {}: {error}",
                 dest.name
             )));
+        }
+    }
+}
+
+async fn broadcast_room_sync(shared: Arc<Shared>, targets: Vec<Dest>, room: Room) {
+    for dest in targets {
+        let result = async {
+            let key = shared.private_key()?;
+            let mut stream = timeout(Duration::from_secs(5), TcpStream::connect(dest.addr)).await??;
+            stream.write_u8(b'R').await?;
+            let mut ch = timeout(Duration::from_secs(10), SecureChannel::initiate(stream, &key)).await??;
+            ch.send(&serde_json::to_vec(&RoomMessage::Sync { room: room.clone() })?).await?;
+            if ch.recv().await? != b"OK" {
+                bail!("member did not confirm room synchronization");
+            }
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+        if let Err(error) = result {
+            shared.emit(Event::Error(format!("room sync to {} failed: {error}", dest.name)));
         }
     }
 }
@@ -962,11 +1053,12 @@ async fn join_room(
         owner_public_key,
         members,
         files,
+        room: room_snapshot,
     } = response
     else {
         bail!("room owner returned an invalid response");
     };
-    let room = crate::store::Room {
+    let room = room_snapshot.unwrap_or_else(|| crate::store::Room {
         id: room_id,
         name: room_name,
         invite_code,
@@ -1007,7 +1099,7 @@ async fn join_room(
         clipboard: Vec::new(),
         activity: Vec::new(),
         pending_members: Vec::new(),
-    };
+    });
     let owner_key = room.owner_public_key.clone();
     let room_files = room.files.clone();
     let room_id_for_sync = room.id.clone();
@@ -1477,16 +1569,32 @@ async fn send_payload(shared: Arc<Shared>, targets: Vec<Dest>, payload: Payload)
 }
 
 fn room_targets(shared: &Arc<Shared>, room_id: &str) -> Vec<Dest> {
-    let config = shared.config.lock().unwrap();
-    let Some(room) = config.rooms.iter().find(|room| room.id == room_id) else {
-        return Vec::new();
+    let keys = {
+        let config = shared.config.lock().unwrap();
+        let Some(room) = config.rooms.iter().find(|room| room.id == room_id) else {
+            return Vec::new();
+        };
+        room.members
+            .iter()
+            .filter(|member| member.public_key != config.public_key)
+            .map(|member| member.public_key.clone())
+            .collect()
     };
-    let keys = room
-        .members
-        .iter()
-        .filter(|member| member.public_key != config.public_key)
-        .map(|member| member.public_key.clone())
-        .collect();
+    shared.targets(&Target::Peers(keys))
+}
+
+fn room_targets_except(shared: &Arc<Shared>, room_id: &str, excluded: &str) -> Vec<Dest> {
+    let keys = {
+        let config = shared.config.lock().unwrap();
+        let Some(room) = config.rooms.iter().find(|room| room.id == room_id) else {
+            return Vec::new();
+        };
+        room.members
+            .iter()
+            .filter(|member| member.public_key != config.public_key && member.public_key != excluded)
+            .map(|member| member.public_key.clone())
+            .collect()
+    };
     shared.targets(&Target::Peers(keys))
 }
 

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use crate::store::{Room, RoomUpdate};
 
 /// Plaintext bytes per encrypted frame (Noise limit is 65535 including the 16 byte tag).
 pub const CHUNK: usize = 60_000;
@@ -61,6 +62,8 @@ pub enum RoomMessage {
         #[serde(default)]
         members: Vec<RoomMemberRecord>,
         files: Vec<RoomFileRecord>,
+        #[serde(default)]
+        room: Option<Room>,
     },
     Upload {
         room_id: String,
@@ -80,6 +83,13 @@ pub enum RoomMessage {
         room_id: String,
         assignment: String,
         file: RoomFileRecord,
+    },
+    Update {
+        room_id: String,
+        update: RoomUpdate,
+    },
+    Sync {
+        room: Room,
     },
 }
 
@@ -103,6 +113,7 @@ mod tests {
                 uploaded_at: 42,
                 submission: None,
             }],
+            room: None,
         };
         let encoded = serde_json::to_vec(&message).unwrap();
         let decoded: RoomMessage = serde_json::from_slice(&encoded).unwrap();
