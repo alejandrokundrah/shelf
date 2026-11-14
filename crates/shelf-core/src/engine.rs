@@ -1874,11 +1874,24 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
         }
     }
 
-    let duplicate = shared
-        .received_hashes
-        .lock()
-        .unwrap()
-        .contains(&header.hash);
+    // For room files "already have it" means the room already lists it. The global hash set
+    // would wrongly skip a file that was received earlier outside the room.
+    let duplicate = match &header.room_id {
+        Some(room_id) => {
+            let hash = hex::encode(header.hash);
+            let config = shared.config.lock().unwrap();
+            config
+                .rooms
+                .iter()
+                .find(|room| room.id == *room_id)
+                .is_some_and(|room| room.files.iter().any(|file| file.hash == hash))
+        }
+        None => shared
+            .received_hashes
+            .lock()
+            .unwrap()
+            .contains(&header.hash),
+    };
     if duplicate {
         ch.send(b"DUPLICATE").await?;
         return Ok(());
@@ -2012,7 +2025,10 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
                     });
                 }
             }
+            let snapshot = room.clone();
             config.save()?;
+            // Refresh the room view so the new file shows up in the list straight away.
+            shared.emit(Event::RoomUpdated(snapshot));
         }
     }
     // Members are only paired with the owner, not with each other, so a member's upload
@@ -2476,7 +2492,9 @@ async fn send_room_file(
                     });
                 }
             }
+            let snapshot = room.clone();
             let _ = config.save();
+            shared.emit(Event::RoomUpdated(snapshot));
         }
     }
 }
