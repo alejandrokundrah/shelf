@@ -112,8 +112,10 @@ pub fn copy_item(item: &ReceivedItem) {
     std::thread::spawn(move || {
         let res = match (item.kind, &item.path, &item.text) {
             (ItemKind::Text, _, Some(t)) => copy_text(t),
-            (ItemKind::Image, Some(p), _) => copy_image(p).or_else(|_| copy_files(&[p.clone()])),
-            (_, Some(p), _) => copy_files(&[p.clone()]),
+            (ItemKind::Image, Some(p), _) => {
+                copy_image(p).or_else(|_| copy_files(std::slice::from_ref(p)))
+            }
+            (_, Some(p), _) => copy_files(std::slice::from_ref(p)),
             _ => Ok(()),
         };
         if let Err(e) = res {

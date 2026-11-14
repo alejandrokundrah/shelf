@@ -549,9 +549,9 @@ fn load_logo(ctx: &egui::Context) -> Option<egui::TextureHandle> {
             }
             if a > 0 {
                 let o = (oy * OUT + ox) * 4;
-                out[o] = (r / a) as u8;
-                out[o + 1] = (g / a) as u8;
-                out[o + 2] = (b / a) as u8;
+                out[o] = r.checked_div(a).unwrap_or(0) as u8;
+                out[o + 1] = g.checked_div(a).unwrap_or(0) as u8;
+                out[o + 2] = b.checked_div(a).unwrap_or(0) as u8;
                 out[o + 3] = (a / n) as u8;
             }
         }
@@ -564,7 +564,7 @@ fn pdf_preview(ctx: &egui::Context, id: u64) -> egui::TextureHandle {
     const W: usize = 96;
     const H: usize = 124;
     let mut rgba = vec![0u8; W * H * 4];
-    for pixel in rgba.chunks_exact_mut(4) {
+    for pixel in rgba.as_chunks_mut::<4>().0 {
         pixel.copy_from_slice(&[248, 248, 250, 255]);
     }
     let fill = |rgba: &mut [u8], x0: usize, y0: usize, x1: usize, y1: usize, color: [u8; 4]| {
@@ -599,7 +599,10 @@ fn load_item_preview(ctx: &egui::Context, item: &ReceivedItem) -> Option<egui::T
             egui::TextureOptions::LINEAR,
         ));
     }
-    if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("pdf")) {
+    if path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+    {
         return Some(pdf_preview(ctx, item.id));
     }
     None
@@ -622,8 +625,11 @@ fn send_to_running_instance(paths: &[PathBuf]) -> bool {
 
 fn main() -> eframe::Result<()> {
     let mut args = std::env::args_os().skip(1);
-    let send_paths: Vec<PathBuf> = if args.next().as_deref() == Some(std::ffi::OsStr::new("--send")) {
-        args.map(PathBuf::from).filter(|path| path.exists()).collect()
+    let send_paths: Vec<PathBuf> = if args.next().as_deref() == Some(std::ffi::OsStr::new("--send"))
+    {
+        args.map(PathBuf::from)
+            .filter(|path| path.exists())
+            .collect()
     } else {
         Vec::new()
     };
@@ -646,7 +652,10 @@ fn main() -> eframe::Result<()> {
             if stream.take(1024 * 1024).read_to_string(&mut input).is_ok() {
                 let mut lines = input.lines();
                 if lines.next() == Some("SHELF_SEND") {
-                    let paths = lines.map(PathBuf::from).filter(|path| path.exists()).collect();
+                    let paths = lines
+                        .map(PathBuf::from)
+                        .filter(|path| path.exists())
+                        .collect();
                     let _ = control_tx.send(paths);
                 }
             }
@@ -716,10 +725,9 @@ fn install_fonts(ctx: &egui::Context) {
     .find_map(|p| std::fs::read(p).ok());
 
     if let Some(bytes) = regular {
-        fonts.font_data.insert(
-            "system-ui".to_owned(),
-            egui::FontData::from_owned(bytes).into(),
-        );
+        fonts
+            .font_data
+            .insert("system-ui".to_owned(), egui::FontData::from_owned(bytes));
         fonts
             .families
             .entry(FontFamily::Proportional)
@@ -730,7 +738,7 @@ fn install_fonts(ctx: &egui::Context) {
     if let Some(bytes) = bold {
         fonts.font_data.insert(
             "system-ui-semibold".to_owned(),
-            egui::FontData::from_owned(bytes).into(),
+            egui::FontData::from_owned(bytes),
         );
         semi.push("system-ui-semibold".to_owned());
     }
@@ -1733,13 +1741,10 @@ impl ShelfApp {
         install_fonts(&ctx);
         let settings = Settings::load();
         let tray = build_tray(&ctx);
-        let (hotkeys, hotkey_toggle_id, hotkey_send_clipboard_id) =
-            match register_hotkeys() {
-                Some((manager, toggle, send_clipboard)) => {
-                    (Some(manager), toggle, send_clipboard)
-                }
-                None => (None, 0, 0),
-            };
+        let (hotkeys, hotkey_toggle_id, hotkey_send_clipboard_id) = match register_hotkeys() {
+            Some((manager, toggle, send_clipboard)) => (Some(manager), toggle, send_clipboard),
+            None => (None, 0, 0),
+        };
         let now = Instant::now();
         Self {
             ctx,
@@ -1875,7 +1880,11 @@ impl ShelfApp {
             match ev {
                 Event::RoomUpdated(room) => {
                     let was_known = self.rooms.iter().any(|existing| existing.id == room.id);
-                    let previous = self.rooms.iter().find(|existing| existing.id == room.id).cloned();
+                    let previous = self
+                        .rooms
+                        .iter()
+                        .find(|existing| existing.id == room.id)
+                        .cloned();
                     if let Some(existing) = self.rooms.iter_mut().find(|r| r.id == room.id) {
                         *existing = room.clone();
                     } else {
@@ -1890,7 +1899,9 @@ impl ShelfApp {
                         self.set_status(format!("Room ready: {}", room.name));
                         if let Some(old) = previous {
                             for announcement in room.announcements.iter().filter(|item| {
-                                !old.announcements.iter().any(|existing| existing.id == item.id)
+                                !old.announcements
+                                    .iter()
+                                    .any(|existing| existing.id == item.id)
                                     && item.posted_by != self.device_public_key
                             }) {
                                 notify_room_message("Team announcement", &announcement.message);
@@ -2327,11 +2338,11 @@ impl eframe::App for ShelfApp {
         }
         let expanded = !self.hotkey_closed
             && (self.pinned
-            || hovering_files
-            || self.last_active.elapsed() < Duration::from_millis(1200)
-            || Instant::now() < self.open_until
-            || self.my_code.is_some()
-            || self.pair_dialog.is_some());
+                || hovering_files
+                || self.last_active.elapsed() < Duration::from_millis(1200)
+                || Instant::now() < self.open_until
+                || self.my_code.is_some()
+                || self.pair_dialog.is_some());
         self.apply_geometry(ctx, expanded);
 
         let collapsed = self.cur_w < 80.0;
@@ -2948,9 +2959,10 @@ impl eframe::App for ShelfApp {
                                             ui.horizontal_wrapped(|ui| {
                                                 ui.label(
                                                     RichText::new(format!(
-                                                        "{} · {}",
+                                                        "{} · {} · v{}",
                                                         shorten(&file.name, 28),
-                                                        format!("{} · v{}", human_size(file.size), file.version)
+                                                        human_size(file.size),
+                                                        file.version
                                                     ))
                                                     .size(11.5)
                                                     .color(p.text2),
@@ -3598,8 +3610,8 @@ impl eframe::App for ShelfApp {
                                 {
                                     actions.push(Action::Reveal(i));
                                 }
-                                if can_remove {
-                                    if capsule(
+                                if can_remove
+                                    && capsule(
                                         ui,
                                         "Remove",
                                         Look::Tint(p.red),
@@ -3609,8 +3621,7 @@ impl eframe::App for ShelfApp {
                                     )
                                     .clicked()
                                     {
-                                        actions.push(Action::Remove(i));
-                                    }
+                                    actions.push(Action::Remove(i));
                                 }
                             });
                         });
@@ -3713,11 +3724,23 @@ impl eframe::App for ShelfApp {
                     }
                 }
                 Action::SubmitRoomFile { room_id } => {
-                    self.set_status(format!(
-                        "Drop files to submit for {}",
-                        self.room_assignment_input.trim()
-                    ));
-                    self.active_room_id = Some(room_id);
+                    let assignment = self.room_assignment_input.trim().to_string();
+                    if assignment.is_empty() {
+                        self.set_status("Enter an assignment name first");
+                    } else if let Some(paths) = rfd::FileDialog::new()
+                        .set_title("Choose files to submit")
+                        .pick_files()
+                    {
+                        if !paths.is_empty() {
+                            self.handle.send(Command::SubmitRoomFiles {
+                                room_id: room_id.clone(),
+                                paths,
+                                assignment,
+                            });
+                            self.set_status("Assignment submission sent");
+                            self.active_room_id = Some(room_id);
+                        }
+                    }
                 }
                 Action::CreateAssignment { room_id } => {
                     let deadline = self
@@ -3725,9 +3748,14 @@ impl eframe::App for ShelfApp {
                         .trim()
                         .parse::<u64>()
                         .unwrap_or_default();
-                    let required_files = self.assignment_files.iter().filter_map(|path| {
-                        path.file_name().map(|name| name.to_string_lossy().to_string())
-                    }).collect::<Vec<_>>();
+                    let required_files = self
+                        .assignment_files
+                        .iter()
+                        .filter_map(|path| {
+                            path.file_name()
+                                .map(|name| name.to_string_lossy().to_string())
+                        })
+                        .collect::<Vec<_>>();
                     self.handle.send(Command::CreateAssignment {
                         room_id: room_id.clone(),
                         title: self.assignment_title_input.trim().to_string(),

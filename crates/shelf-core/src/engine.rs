@@ -439,7 +439,7 @@ impl Shared {
             std::fs::create_dir_all(&folder)?;
             for index in 0..archive.len() {
                 let mut entry = archive.by_index(index)?;
-                let Some(relative) = entry.enclosed_name().map(PathBuf::from) else {
+                let Some(relative) = entry.enclosed_name() else {
                     bail!("backup contains an unsafe path");
                 };
                 if let Ok(file_name) = relative.strip_prefix("files") {
@@ -779,15 +779,24 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                     let allowed = config.rooms.iter().any(|room| {
                         room.id == room_id && room.owner_public_key == config.public_key
                     });
-                    let member_keys = config.rooms.iter().find(|room| room.id == room_id)
-                        .map(|room| room.members.iter()
-                            .filter(|member| member.public_key != config.public_key)
-                            .map(|member| member.public_key.clone()).collect())
+                    let member_keys = config
+                        .rooms
+                        .iter()
+                        .find(|room| room.id == room_id)
+                        .map(|room| {
+                            room.members
+                                .iter()
+                                .filter(|member| member.public_key != config.public_key)
+                                .map(|member| member.public_key.clone())
+                                .collect()
+                        })
                         .unwrap_or_default();
                     (member_keys, allowed)
                 };
                 if !allowed {
-                    shared.emit(Event::Error("Only the room owner can delete this room".into()));
+                    shared.emit(Event::Error(
+                        "Only the room owner can delete this room".into(),
+                    ));
                 } else {
                     let targets = shared.targets(&Target::Peers(member_keys));
                     {
@@ -796,7 +805,11 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                         config.save().ok();
                     }
                     let _ = std::fs::remove_dir_all(crate::store::room_dir(&room_id));
-                    tokio::spawn(broadcast_room_room_delete(shared.clone(), targets, room_id.clone()));
+                    tokio::spawn(broadcast_room_room_delete(
+                        shared.clone(),
+                        targets,
+                        room_id.clone(),
+                    ));
                     shared.emit(Event::RoomRemoved(room_id));
                 }
             }
@@ -885,7 +898,10 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                 });
             }
             Command::Unpair { public_key } => {
-                let target = shared.targets(&Target::Peer(public_key.clone())).into_iter().next();
+                let target = shared
+                    .targets(&Target::Peer(public_key.clone()))
+                    .into_iter()
+                    .next();
                 shared.remove_peer(&public_key);
                 if let Some(target) = target {
                     tokio::spawn(send_unpair(shared.clone(), target));
@@ -1065,7 +1081,10 @@ async fn handle_room_connection(shared: &Arc<Shared>, stream: TcpStream) -> Resu
                 .map(|file| file.name.clone());
             room.delete_file(&local_key, &hash);
             config.save()?;
-            (name, config.rooms.iter().find(|room| room.id == room_id).cloned())
+            (
+                name,
+                config.rooms.iter().find(|room| room.id == room_id).cloned(),
+            )
         };
         if let Some(file_name) = file_name {
             let _ = std::fs::remove_file(crate::store::room_dir(&room_id).join(file_name));
@@ -1080,16 +1099,21 @@ async fn handle_room_connection(shared: &Arc<Shared>, stream: TcpStream) -> Resu
         let removed = {
             let mut config = shared.config.lock().unwrap();
             let remote_key = hex::encode(&ch.remote_static);
-            let allowed = config.rooms.iter().any(|room| {
-                room.id == room_id && room.owner_public_key == remote_key
-            });
-            if !allowed { false } else {
+            let allowed = config
+                .rooms
+                .iter()
+                .any(|room| room.id == room_id && room.owner_public_key == remote_key);
+            if !allowed {
+                false
+            } else {
                 config.rooms.retain(|room| room.id != room_id);
                 config.save()?;
                 true
             }
         };
-        if !removed { bail!("room deletion rejected"); }
+        if !removed {
+            bail!("room deletion rejected");
+        }
         let _ = std::fs::remove_dir_all(crate::store::room_dir(&room_id));
         ch.send(b"OK").await?;
         shared.emit(Event::RoomRemoved(room_id));
@@ -1223,16 +1247,26 @@ async fn send_unpair(shared: Arc<Shared>, dest: Dest) {
         let key = shared.private_key()?;
         let mut stream = timeout(Duration::from_secs(5), TcpStream::connect(dest.addr)).await??;
         stream.write_u8(b'R').await?;
-        let mut ch = timeout(Duration::from_secs(10), SecureChannel::initiate(stream, &key)).await??;
+        let mut ch = timeout(
+            Duration::from_secs(10),
+            SecureChannel::initiate(stream, &key),
+        )
+        .await??;
         if ch.remote_static != hex::decode(&dest.pk)? {
             bail!("peer presented an unexpected identity");
         }
         ch.send(&serde_json::to_vec(&RoomMessage::Unpair)?).await?;
-        if ch.recv().await? != b"OK" { bail!("peer did not confirm removal"); }
+        if ch.recv().await? != b"OK" {
+            bail!("peer did not confirm removal");
+        }
         Ok::<(), anyhow::Error>(())
-    }.await;
+    }
+    .await;
     if let Err(error) = result {
-        shared.emit(Event::Info(format!("Removed {} locally; remote removal pending: {error}", dest.name)));
+        shared.emit(Event::Info(format!(
+            "Removed {} locally; remote removal pending: {error}",
+            dest.name
+        )));
     }
 }
 
@@ -1277,14 +1311,30 @@ async fn broadcast_room_room_delete(shared: Arc<Shared>, targets: Vec<Dest>, roo
     for dest in targets {
         let result = async {
             let key = shared.private_key()?;
-            let mut stream = timeout(Duration::from_secs(5), TcpStream::connect(dest.addr)).await??;
+            let mut stream =
+                timeout(Duration::from_secs(5), TcpStream::connect(dest.addr)).await??;
             stream.write_u8(b'R').await?;
-            let mut ch = timeout(Duration::from_secs(10), SecureChannel::initiate(stream, &key)).await??;
-            ch.send(&serde_json::to_vec(&RoomMessage::DeleteRoom { room_id: room_id.clone() })?).await?;
-            if ch.recv().await? != b"OK" { bail!("member did not confirm room deletion"); }
+            let mut ch = timeout(
+                Duration::from_secs(10),
+                SecureChannel::initiate(stream, &key),
+            )
+            .await??;
+            ch.send(&serde_json::to_vec(&RoomMessage::DeleteRoom {
+                room_id: room_id.clone(),
+            })?)
+            .await?;
+            if ch.recv().await? != b"OK" {
+                bail!("member did not confirm room deletion");
+            }
             Ok::<(), anyhow::Error>(())
-        }.await;
-        if let Err(error) = result { shared.emit(Event::Error(format!("room deletion failed for {}: {error}", dest.name))); }
+        }
+        .await;
+        if let Err(error) = result {
+            shared.emit(Event::Error(format!(
+                "room deletion failed for {}: {error}",
+                dest.name
+            )));
+        }
     }
 }
 
@@ -1573,7 +1623,7 @@ fn emit_progress(
     let percent = if total == 0 {
         100
     } else {
-        ((done * 100) / total) as u8
+        done.saturating_mul(100).checked_div(total).unwrap_or(0) as u8
     };
     if percent != *last_percent && (percent.saturating_sub(*last_percent) >= 5 || percent == 100) {
         *last_percent = percent;
@@ -1609,7 +1659,7 @@ async fn receive_to_file(
     let mut last_percent = if size == 0 {
         0
     } else {
-        ((offset * 100) / size) as u8
+        offset.saturating_mul(100).checked_div(size).unwrap_or(0) as u8
     };
     while left > 0 {
         if is_cancelled(shared, TransferDirection::Download, name, peer) {
@@ -1680,12 +1730,22 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
     if let Some(room_id) = &header.room_id {
         let allowed = {
             let config = shared.config.lock().unwrap();
-            config.rooms.iter().find(|room| room.id == *room_id)
-                .map(|room| room.files.iter().find(|file| file.hash == hex::encode(header.hash))
-                    .map(|file| file.downloads_allowed).unwrap_or(true))
+            config
+                .rooms
+                .iter()
+                .find(|room| room.id == *room_id)
+                .map(|room| {
+                    room.files
+                        .iter()
+                        .find(|file| file.hash == hex::encode(header.hash))
+                        .map(|file| file.downloads_allowed)
+                        .unwrap_or(true)
+                })
                 .unwrap_or(false)
         };
-        if !allowed { bail!("downloads for this room file are restricted"); }
+        if !allowed {
+            bail!("downloads for this room file are restricted");
+        }
     }
 
     let duplicate = shared
@@ -1885,7 +1945,10 @@ async fn push_item<R: AsyncRead + Unpin>(
     let mut last_percent = if header.size == 0 {
         0
     } else {
-        ((offset * 100) / header.size) as u8
+        offset
+            .saturating_mul(100)
+            .checked_div(header.size)
+            .unwrap_or(0) as u8
     };
     while left > 0 {
         if is_cancelled(shared, TransferDirection::Upload, label, &dest.name) {
