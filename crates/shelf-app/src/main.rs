@@ -1586,7 +1586,7 @@ impl eframe::App for ShelfApp {
                     ui.horizontal(|ui| {
                         ui.add(
                             egui::Image::from_bytes(
-                                "bytes://shelf-app-icon",
+                                "bytes://shelf-app-icon.png",
                                 include_bytes!("../assets/icon.png"),
                             )
                             .fit_to_exact_size(vec2(34.0, 34.0)),
