@@ -1,5 +1,7 @@
 # Shelf
 
+![Shelf app icon](crates/shelf-app/assets/icon.png)
+
 Shelf is a Windows edge-of-screen sharing tool for nearby PCs. Send files,
 images, clipboard text, and classroom or team work over an authenticated local
 network connection.
@@ -7,7 +9,9 @@ network connection.
 ## Features
 
 - Send clipboard contents, files, and images to one, several, or all paired PCs.
-- Drag files onto the shelf or use **Send Clipboard**.
+- Drag one or many files onto the shelf, including complete folders.
+- Preserve folder structure when transferring directories.
+- Compress text, files, and folders automatically when compression makes them smaller.
 - Show upload/download progress, speed, ETA, and transfer failures.
 - Pause incoming transfers while continuing to send.
 - Cancel active transfers and resume interrupted file transfers.
@@ -15,6 +19,8 @@ network connection.
 - Windows notifications for received items.
 - Activity log for pairing, connections, transfers, and failures.
 - Clear all shelf items with one action.
+- Detect the Windows system language and localize the interface in English,
+  French, Spanish, or German, with English fallback.
 - Windows tray/shortcut-friendly installer workflow.
 
 ## Install
@@ -98,11 +104,21 @@ from the room owner.
 
 ## Classroom and team support
 
-The room model supports owner/member roles, editor/contributor/viewer roles,
-file versions, edit locks, notes, links, announcements, shared clipboard
-entries, activity records, room expiration metadata, and download policy
-metadata. The core permission and version rules are tested; additional team
-controls are being exposed progressively in the UI.
+The Rooms UI includes:
+
+- Owner, member, editor, contributor, and viewer roles.
+- Shared notes and links.
+- Pinned announcements.
+- Shared clipboard entries.
+- File versions and edit locks.
+- Per-file download restrictions.
+- Activity history.
+- Room expiration metadata.
+- Assignment creation, submissions, and file requests.
+
+Updates are synchronized across members over the authenticated LAN channel.
+New rooms become the active dropbox automatically, and idle rooms reuse the
+last known address of paired members when discovery briefly goes quiet.
 
 ## Security and privacy
 
@@ -128,7 +144,7 @@ network.
 3. Run **Build Shelf installer** manually.
 4. Download Shelf-Setup.exe from the workflow artifact.
 
-Pushing a tag such as v0.1.0 also attaches the installer to a GitHub Release.
+Pushing a tag such as v0.1.1 also attaches the installer to a GitHub Release.
 
 ### Local Windows build
 
