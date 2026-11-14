@@ -1208,7 +1208,12 @@ impl eframe::App for ShelfApp {
             let inner = panel.shrink2(vec2(16.0, 16.0));
             ui.allocate_new_ui(egui::UiBuilder::new().max_rect(inner), |ui| {
                 ui.set_clip_rect(inner.expand2(vec2(2.0, 0.0)));
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("shelf-content-scroll")
+                    .auto_shrink([false, false])
+                    .max_width(inner.width())
+                    .show(ui, |ui| {
+                    ui.set_width(inner.width().max(1.0));
                     // Header.
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
@@ -1539,8 +1544,10 @@ impl eframe::App for ShelfApp {
                                     );
                                 } else {
                                     for room in &rooms {
+                                        ui.set_width(ui.available_width());
                                         hairline(ui);
                                         ui.vertical(|ui| {
+                                            ui.set_width(ui.available_width());
                                             ui.vertical(|ui| {
                                                 ui.label(
                                                     RichText::new(&room.name)
