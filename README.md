@@ -16,6 +16,20 @@ Drag a file, image or text onto it and it appears on your other PCs; paste with 
   so Ctrl+V pastes it anywhere. "Copy" re-copies, "Show" opens the folder, "Remove" deletes.
 - Items and their files expire after 1 hour.
 
+## Collaboration rooms
+- Open **Rooms** and create a named class or team room. The owner receives an invite
+  code and QR payload for the room.
+- Pair with the owner, then enter the room ID and invite code under **Rooms** and
+  choose **Join**.
+- Select **Use dropbox** for a room. Dropped files are replicated to the room
+  members in each member's local Shelf room folder.
+- Enter an assignment name before dropping files to submit timestamped work.
+- Members can request a named file from the room owner.
+- Room owners can delete room files; members can upload but cannot delete shared
+  room entries. Same-name files are preserved as conflict copies.
+- Room broadcast and direct/selected-device sending continue to work independently
+  of the active room.
+
 ## For the developer: producing Shelf-Setup.exe
 Option A (no setup on your PC): put this folder in a GitHub repository, open the
 Actions tab, run "Build Shelf installer". When it finishes, download Shelf-Setup.exe from
