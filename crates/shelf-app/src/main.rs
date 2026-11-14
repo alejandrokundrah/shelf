@@ -14,11 +14,183 @@ use std::cell::Cell;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const COLLAPSED_W: f32 = 14.0;
 const EXPANDED_W: f32 = 430.0;
 const ITEM_TTL: Duration = Duration::from_secs(3600);
+
+#[derive(Clone, Copy)]
+enum Locale {
+    English,
+    French,
+    Spanish,
+    German,
+}
+
+static LOCALE: OnceLock<Locale> = OnceLock::new();
+
+fn system_locale() -> Locale {
+    *LOCALE.get_or_init(|| {
+        let mut value = std::env::var("LANG").unwrap_or_default();
+        if value.is_empty() {
+            value = std::process::Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "[System.Globalization.CultureInfo]::CurrentUICulture.Name",
+                ])
+                .output()
+                .ok()
+                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+                .unwrap_or_default();
+        }
+        let value = value.to_ascii_lowercase();
+        if value.starts_with("fr") {
+            Locale::French
+        } else if value.starts_with("es") {
+            Locale::Spanish
+        } else if value.starts_with("de") {
+            Locale::German
+        } else {
+            Locale::English
+        }
+    })
+}
+
+fn tr(key: &'static str) -> &'static str {
+    match (system_locale(), key) {
+        (Locale::French, "Send Clipboard") => "Envoyer le presse-papiers",
+        (Locale::Spanish, "Send Clipboard") => "Enviar portapapeles",
+        (Locale::German, "Send Clipboard") => "Zwischenablage senden",
+        (Locale::French, "Send to") => "Envoyer à",
+        (Locale::Spanish, "Send to") => "Enviar a",
+        (Locale::German, "Send to") => "Senden an",
+        (Locale::French, "All devices") => "Tous les appareils",
+        (Locale::Spanish, "All devices") => "Todos los dispositivos",
+        (Locale::German, "All devices") => "Alle Geräte",
+        (Locale::French, "Rooms") => "Espaces",
+        (Locale::Spanish, "Rooms") => "Salas",
+        (Locale::German, "Rooms") => "Räume",
+        (Locale::French, "Devices") => "Appareils",
+        (Locale::Spanish, "Devices") => "Dispositivos",
+        (Locale::German, "Devices") => "Geräte",
+        (Locale::French, "Activity") => "Activité",
+        (Locale::Spanish, "Activity") => "Actividad",
+        (Locale::German, "Activity") => "Aktivität",
+        (Locale::French, "Create") => "Créer",
+        (Locale::Spanish, "Create") => "Crear",
+        (Locale::German, "Create") => "Erstellen",
+        (Locale::French, "Request") => "Demander",
+        (Locale::Spanish, "Request") => "Solicitar",
+        (Locale::German, "Request") => "Anfordern",
+        (Locale::French, "Submit") => "Remettre",
+        (Locale::Spanish, "Submit") => "Entregar",
+        (Locale::German, "Submit") => "Abgeben",
+        (Locale::French, "Announce") => "Annoncer",
+        (Locale::Spanish, "Announce") => "Anunciar",
+        (Locale::German, "Announce") => "Ankündigen",
+        (Locale::French, "Share text") => "Partager le texte",
+        (Locale::Spanish, "Share text") => "Compartir texto",
+        (Locale::German, "Share text") => "Text teilen",
+        (Locale::French, "Copy") => "Copier",
+        (Locale::Spanish, "Copy") => "Copiar",
+        (Locale::German, "Copy") => "Kopieren",
+        (Locale::French, "Remove") => "Supprimer",
+        (Locale::Spanish, "Remove") => "Eliminar",
+        (Locale::German, "Remove") => "Entfernen",
+        (Locale::French, "Lock") => "Verrouiller",
+        (Locale::Spanish, "Lock") => "Bloquear",
+        (Locale::German, "Lock") => "Sperren",
+        (Locale::French, "Unlock") => "Déverrouiller",
+        (Locale::Spanish, "Unlock") => "Desbloquear",
+        (Locale::German, "Unlock") => "Entsperren",
+        (Locale::French, "Delete") => "Supprimer",
+        (Locale::Spanish, "Delete") => "Eliminar",
+        (Locale::German, "Delete") => "Löschen",
+        (Locale::French, "Cancel") => "Annuler",
+        (Locale::Spanish, "Cancel") => "Cancelar",
+        (Locale::German, "Cancel") => "Abbrechen",
+        (Locale::French, "Join") => "Rejoindre",
+        (Locale::Spanish, "Join") => "Unirse",
+        (Locale::German, "Join") => "Beitreten",
+        (Locale::French, "Start pairing") => "Commencer l'association",
+        (Locale::Spanish, "Start pairing") => "Iniciar emparejamiento",
+        (Locale::German, "Start pairing") => "Kopplung starten",
+        (Locale::French, "Pair") => "Associer",
+        (Locale::Spanish, "Pair") => "Emparejar",
+        (Locale::German, "Pair") => "Koppeln",
+        (Locale::French, "Connect") => "Connecter",
+        (Locale::Spanish, "Connect") => "Conectar",
+        (Locale::German, "Connect") => "Verbinden",
+        (Locale::French, "Show pairing code") => "Afficher le code d'association",
+        (Locale::Spanish, "Show pairing code") => "Mostrar código de emparejamiento",
+        (Locale::German, "Show pairing code") => "Kopplungscode anzeigen",
+        (Locale::French, "Nearby") => "À proximité",
+        (Locale::Spanish, "Nearby") => "Cercanos",
+        (Locale::German, "Nearby") => "In der Nähe",
+        (Locale::French, "Paired") => "Associés",
+        (Locale::Spanish, "Paired") => "Emparejados",
+        (Locale::German, "Paired") => "Gekoppelt",
+        (Locale::French, "Not paired") => "Non associé",
+        (Locale::Spanish, "Not paired") => "No emparejado",
+        (Locale::German, "Not paired") => "Nicht gekoppelt",
+        (Locale::French, "No activity yet.") => "Aucune activité pour le moment.",
+        (Locale::Spanish, "No activity yet.") => "Aún no hay actividad.",
+        (Locale::German, "No activity yet.") => "Noch keine Aktivität.",
+        (Locale::French, "New class or team room") => "Nouvel espace de classe ou d'équipe",
+        (Locale::Spanish, "New class or team room") => "Nueva sala de clase o equipo",
+        (Locale::German, "New class or team room") => "Neuer Klassen- oder Teamraum",
+        (Locale::French, "Request a file from the room") => "Demander un fichier à l'espace",
+        (Locale::Spanish, "Request a file from the room") => "Solicitar un archivo a la sala",
+        (Locale::German, "Request a file from the room") => "Datei aus dem Raum anfordern",
+        (Locale::French, "Team announcement") => "Annonce de l'équipe",
+        (Locale::Spanish, "Team announcement") => "Anuncio del equipo",
+        (Locale::German, "Team announcement") => "Teamankündigung",
+        (Locale::French, "Shared clipboard entry") => "Entrée du presse-papiers partagé",
+        (Locale::Spanish, "Shared clipboard entry") => "Entrada del portapapeles compartido",
+        (Locale::German, "Shared clipboard entry") => "Gemeinsamer Zwischenablageeintrag",
+        (Locale::French, "Add note") => "Ajouter une note",
+        (Locale::Spanish, "Add note") => "Añadir nota",
+        (Locale::German, "Add note") => "Notiz hinzufügen",
+        (Locale::French, "Add link") => "Ajouter un lien",
+        (Locale::Spanish, "Add link") => "Añadir enlace",
+        (Locale::German, "Add link") => "Link hinzufügen",
+        (Locale::French, "Set expiry") => "Définir l'expiration",
+        (Locale::Spanish, "Set expiry") => "Establecer vencimiento",
+        (Locale::German, "Set expiry") => "Ablauf festlegen",
+        (Locale::French, "Announcements") => "Annonces",
+        (Locale::Spanish, "Announcements") => "Anuncios",
+        (Locale::German, "Announcements") => "Ankündigungen",
+        (Locale::French, "Shared clipboard") => "Presse-papiers partagé",
+        (Locale::Spanish, "Shared clipboard") => "Portapapeles compartido",
+        (Locale::German, "Shared clipboard") => "Gemeinsame Zwischenablage",
+        (Locale::French, "Recent activity") => "Activité récente",
+        (Locale::Spanish, "Recent activity") => "Actividad reciente",
+        (Locale::German, "Recent activity") => "Letzte Aktivität",
+        (Locale::French, "Shared notes") => "Notes partagées",
+        (Locale::Spanish, "Shared notes") => "Notas compartidas",
+        (Locale::German, "Shared notes") => "Gemeinsame Notizen",
+        (Locale::French, "Shared links") => "Liens partagés",
+        (Locale::Spanish, "Shared links") => "Enlaces compartidos",
+        (Locale::German, "Shared links") => "Geteilte Links",
+        (Locale::French, "Members and roles") => "Membres et rôles",
+        (Locale::Spanish, "Members and roles") => "Miembros y roles",
+        (Locale::German, "Members and roles") => "Mitglieder und Rollen",
+        (Locale::French, "Teacher assignment") => "Devoir de l'enseignant",
+        (Locale::Spanish, "Teacher assignment") => "Tarea del profesor",
+        (Locale::German, "Teacher assignment") => "Aufgabe der Lehrkraft",
+        (Locale::French, "Create assignment") => "Créer le devoir",
+        (Locale::Spanish, "Create assignment") => "Crear tarea",
+        (Locale::German, "Create assignment") => "Aufgabe erstellen",
+        (Locale::French, "Nothing on the shelf") => "Rien sur l'étagère",
+        (Locale::Spanish, "Nothing on the shelf") => "Nada en el estante",
+        (Locale::German, "Nothing on the shelf") => "Nichts im Shelf",
+        _ => key,
+    }
+}
 
 // The window is transparent; the glass panel floats inside it with this gap on every side,
 // which also leaves room for the soft shadow.
@@ -1305,7 +1477,7 @@ impl eframe::App for ShelfApp {
                             }
                             thin_progress(ui, fraction);
                             if !transfer.finished
-                                && capsule(ui, "Cancel", Look::Tint(p.red), 24.0, None, true)
+                                && capsule(ui, tr("Cancel"), Look::Tint(p.red), 24.0, None, true)
                                     .clicked()
                             {
                                 actions.push(Action::CancelTransfers);
@@ -1317,7 +1489,7 @@ impl eframe::App for ShelfApp {
                     drop_zone(ui, hovering_files);
                     if capsule(
                         ui,
-                        "Send Clipboard",
+                        tr("Send Clipboard"),
                         Look::Primary,
                         38.0,
                         Some(ui.available_width()),
@@ -1330,12 +1502,12 @@ impl eframe::App for ShelfApp {
 
                     // Settings.
                     card(ui, |ui| {
-                        ui.label(RichText::new("Send to").size(13.5).color(p.text));
+                        ui.label(RichText::new(tr("Send to")).size(13.5).color(p.text));
                         ui.horizontal_wrapped(|ui| {
                             ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
                             let all = matches!(self.target, Target::All);
                             let look = if all { Look::Primary } else { Look::Glass };
-                            if capsule(ui, "All devices", look, 28.0, None, true).clicked() {
+                            if capsule(ui, tr("All devices"), look, 28.0, None, true).clicked() {
                                 self.target = Target::All;
                             }
                             for dev in &paired {
@@ -1389,19 +1561,19 @@ impl eframe::App for ShelfApp {
                     });
 
                     // Collaboration rooms.
-                    egui::CollapsingHeader::new(semibold("Rooms", 12.5).color(p.text2))
+                    egui::CollapsingHeader::new(semibold(tr("Rooms"), 12.5).color(p.text2))
                         .default_open(true)
                         .show(ui, |ui| {
                             card(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.add(
                                         egui::TextEdit::singleline(&mut self.room_name_input)
-                                            .hint_text("New class or team room")
+                                            .hint_text(tr("New class or team room"))
                                             .desired_width(ui.available_width() - 86.0),
                                     );
                                     if capsule(
                                         ui,
-                                        "Create",
+                                        tr("Create"),
                                         Look::Primary,
                                         28.0,
                                         Some(74.0),
@@ -1422,7 +1594,7 @@ impl eframe::App for ShelfApp {
                                     );
                                     if capsule(
                                         ui,
-                                        "Submit",
+                                        tr("Submit"),
                                         Look::Primary,
                                         28.0,
                                         Some(74.0),
@@ -1439,12 +1611,12 @@ impl eframe::App for ShelfApp {
                                 ui.horizontal(|ui| {
                                     ui.add(
                                         egui::TextEdit::singleline(&mut self.room_request_input)
-                                            .hint_text("Request a file from the room")
+                                            .hint_text(tr("Request a file from the room"))
                                             .desired_width(ui.available_width() - 86.0),
                                     );
                                     if capsule(
                                         ui,
-                                        "Request",
+                                        tr("Request"),
                                         Look::Glass,
                                         28.0,
                                         Some(74.0),
@@ -1463,12 +1635,12 @@ impl eframe::App for ShelfApp {
                                 ui.horizontal(|ui| {
                                     ui.add(
                                         egui::TextEdit::singleline(&mut self.room_announcement_input)
-                                            .hint_text("Team announcement")
+                                            .hint_text(tr("Team announcement"))
                                             .desired_width(ui.available_width() - 86.0),
                                     );
                                     if capsule(
                                         ui,
-                                        "Announce",
+                                        tr("Announce"),
                                         Look::Primary,
                                         28.0,
                                         Some(74.0),
@@ -1491,12 +1663,12 @@ impl eframe::App for ShelfApp {
                                 ui.horizontal(|ui| {
                                     ui.add(
                                         egui::TextEdit::singleline(&mut self.room_clipboard_input)
-                                            .hint_text("Shared clipboard entry")
+                                            .hint_text(tr("Shared clipboard entry"))
                                             .desired_width(ui.available_width() - 86.0),
                                     );
                                     if capsule(
                                         ui,
-                                        "Share text",
+                                        tr("Share text"),
                                         Look::Glass,
                                         28.0,
                                         Some(74.0),
@@ -1526,7 +1698,7 @@ impl eframe::App for ShelfApp {
                                             .hint_text("Shared note")
                                             .desired_width(ui.available_width() * 0.38),
                                     );
-                                    if capsule(ui, "Add note", Look::Glass, 28.0, None, self.active_room_id.is_some()).clicked() {
+                                    if capsule(ui, tr("Add note"), Look::Glass, 28.0, None, self.active_room_id.is_some()).clicked() {
                                         if let Some(room_id) = self.active_room_id.clone() {
                                             actions.push(Action::UpdateRoom {
                                                 room_id,
@@ -1549,7 +1721,7 @@ impl eframe::App for ShelfApp {
                                             .hint_text("https:// shared link")
                                             .desired_width(ui.available_width() * 0.42),
                                     );
-                                    if capsule(ui, "Add link", Look::Glass, 28.0, None, self.active_room_id.is_some()).clicked() {
+                                    if capsule(ui, tr("Add link"), Look::Glass, 28.0, None, self.active_room_id.is_some()).clicked() {
                                         if let Some(room_id) = self.active_room_id.clone() {
                                             actions.push(Action::UpdateRoom {
                                                 room_id,
@@ -1700,7 +1872,7 @@ impl eframe::App for ShelfApp {
                                                     && (file.locked_by.is_none() || mine)
                                                     && capsule(
                                                         ui,
-                                                        if mine { "Unlock" } else { "Lock" },
+                                                        if mine { tr("Unlock") } else { tr("Lock") },
                                                         Look::Glass,
                                                         22.0,
                                                         None,
@@ -1720,7 +1892,7 @@ impl eframe::App for ShelfApp {
                                                 if room.owner_public_key == self.device_public_key
                                                     && capsule(
                                                         ui,
-                                                        "Delete",
+                                                        tr("Delete"),
                                                         Look::Tint(p.red),
                                                         24.0,
                                                         None,
@@ -1756,7 +1928,7 @@ impl eframe::App for ShelfApp {
                                         }
                                         if !room.announcements.is_empty() {
                                             ui.add_space(4.0);
-                                            ui.label(RichText::new("Announcements").size(12.0).color(p.text2));
+                                            ui.label(RichText::new(tr("Announcements")).size(12.0).color(p.text2));
                                             for announcement in room.announcements.iter().rev().take(5) {
                                                 ui.horizontal_wrapped(|ui| {
                                                     ui.add(
@@ -1795,7 +1967,7 @@ impl eframe::App for ShelfApp {
                                         }
                                         if !room.clipboard.is_empty() {
                                             ui.add_space(4.0);
-                                            ui.label(RichText::new("Shared clipboard").size(12.0).color(p.text2));
+                                            ui.label(RichText::new(tr("Shared clipboard")).size(12.0).color(p.text2));
                                             for entry in room.clipboard.iter().rev().take(5) {
                                                 ui.horizontal_wrapped(|ui| {
                                                     ui.add(
@@ -1806,11 +1978,11 @@ impl eframe::App for ShelfApp {
                                                         )
                                                         .wrap(),
                                                     );
-                                                    if capsule(ui, "Copy", Look::Glass, 22.0, None, true).clicked() {
+                                                    if capsule(ui, tr("Copy"), Look::Glass, 22.0, None, true).clicked() {
                                                         let _ = clip::copy_text(&entry.content);
                                                     }
                                                     if room.can_edit(&self.device_public_key)
-                                                        && capsule(ui, "Remove", Look::Tint(p.red), 22.0, None, true).clicked()
+                                                        && capsule(ui, tr("Remove"), Look::Tint(p.red), 22.0, None, true).clicked()
                                                     {
                                                         actions.push(Action::UpdateRoom {
                                                             room_id: room.id.clone(),
@@ -1822,7 +1994,7 @@ impl eframe::App for ShelfApp {
                                         }
                                         if !room.activity.is_empty() {
                                             ui.add_space(4.0);
-                                            ui.label(RichText::new("Recent activity").size(12.0).color(p.text2));
+                                            ui.label(RichText::new(tr("Recent activity")).size(12.0).color(p.text2));
                                             for activity in room.activity.iter().rev().take(5) {
                                                 ui.label(
                                                     RichText::new(format!(
@@ -1837,7 +2009,7 @@ impl eframe::App for ShelfApp {
                                         }
                                         if !room.notes.is_empty() {
                                             ui.add_space(4.0);
-                                            ui.label(RichText::new("Shared notes").size(12.0).color(p.text2));
+                                            ui.label(RichText::new(tr("Shared notes")).size(12.0).color(p.text2));
                                             for note in room.notes.iter().rev().take(5) {
                                                 ui.add(
                                                     egui::Label::new(
@@ -1851,7 +2023,7 @@ impl eframe::App for ShelfApp {
                                         }
                                         if !room.links.is_empty() {
                                             ui.add_space(4.0);
-                                            ui.label(RichText::new("Shared links").size(12.0).color(p.text2));
+                                            ui.label(RichText::new(tr("Shared links")).size(12.0).color(p.text2));
                                             for link in room.links.iter().rev().take(5) {
                                                 ui.hyperlink_to(
                                                     RichText::new(&link.title).size(11.5),
@@ -1873,7 +2045,7 @@ impl eframe::App for ShelfApp {
                                                         .hint_text("Expiration Unix seconds (blank = none)")
                                                         .desired_width(ui.available_width() - 96.0),
                                                 );
-                                                if capsule(ui, "Set expiry", Look::Glass, 28.0, Some(88.0), true).clicked() {
+                                                if capsule(ui, tr("Set expiry"), Look::Glass, 28.0, Some(88.0), true).clicked() {
                                                     let expires_at = self.room_expiration_input.trim().parse::<u64>().ok();
                                                     actions.push(Action::UpdateRoom {
                                                         room_id: room.id.clone(),
@@ -1882,7 +2054,7 @@ impl eframe::App for ShelfApp {
                                                 }
                                             });
                                             ui.add_space(4.0);
-                                            ui.label(RichText::new("Members and roles").size(12.0).color(p.text2));
+                                            ui.label(RichText::new(tr("Members and roles")).size(12.0).color(p.text2));
                                             for member in room.members.iter().filter(|member| member.public_key != room.owner_public_key) {
                                                 ui.horizontal(|ui| {
                                                     ui.label(RichText::new(shorten(&member.name, 18)).size(11.5).color(p.text));
@@ -1907,7 +2079,7 @@ impl eframe::App for ShelfApp {
                                             }
                                             ui.add_space(4.0);
                                             ui.label(
-                                                RichText::new("Teacher assignment")
+                                                RichText::new(tr("Teacher assignment"))
                                                     .size(12.0)
                                                     .color(p.text2),
                                             );
@@ -1932,7 +2104,7 @@ impl eframe::App for ShelfApp {
                                             );
                                             if capsule(
                                                 ui,
-                                                "Create assignment",
+                                                tr("Create assignment"),
                                                 Look::Primary,
                                                 28.0,
                                                 Some(ui.available_width()),
@@ -1972,7 +2144,7 @@ impl eframe::App for ShelfApp {
                         });
 
                     // Devices and pairing.
-                    egui::CollapsingHeader::new(semibold("Devices", 12.5).color(p.text2))
+                    egui::CollapsingHeader::new(semibold(tr("Devices"), 12.5).color(p.text2))
                         .default_open(
                             paired.is_empty() || self.my_code.is_some() || self.pair_dialog.is_some(),
                         )
@@ -2040,7 +2212,7 @@ impl eframe::App for ShelfApp {
                                 });
                             }
                             if !nearby.is_empty() {
-                                section_label(ui, "Nearby");
+                                section_label(ui, tr("Nearby"));
                                 card(ui, |ui| {
                                     for (i, d) in nearby.iter().enumerate() {
                                         if i > 0 {
@@ -2060,7 +2232,7 @@ impl eframe::App for ShelfApp {
                                                         .color(p.text),
                                                 );
                                                 ui.label(
-                                                    RichText::new("Not paired")
+                                                        RichText::new(tr("Not paired"))
                                                         .size(11.5)
                                                         .color(p.text3),
                                                 );
@@ -2070,7 +2242,7 @@ impl eframe::App for ShelfApp {
                                                 |ui| {
                                                     if capsule(
                                                         ui,
-                                                        "Pair",
+                                                        tr("Pair"),
                                                         Look::Primary,
                                                         26.0,
                                                         None,
@@ -2116,7 +2288,7 @@ impl eframe::App for ShelfApp {
                             } else if self.pair_dialog.is_none()
                                 && capsule(
                                     ui,
-                                    "Show a pairing code on this PC",
+                                            tr("Show pairing code"),
                                     Look::Glass,
                                     34.0,
                                     Some(ui.available_width()),
@@ -2158,7 +2330,7 @@ impl eframe::App for ShelfApp {
                                             && d.code.chars().all(|c| c.is_ascii_digit());
                                         if capsule(
                                             ui,
-                                            "Connect",
+                                            tr("Connect"),
                                             Look::Primary,
                                             30.0,
                                             None,
@@ -2168,7 +2340,7 @@ impl eframe::App for ShelfApp {
                                         {
                                             actions.push(Action::ConnectPair);
                                         }
-                                        if capsule(ui, "Cancel", Look::Glass, 30.0, None, true)
+                                        if capsule(ui, tr("Cancel"), Look::Glass, 30.0, None, true)
                                             .clicked()
                                         {
                                             actions.push(Action::ClosePair);
@@ -2181,12 +2353,12 @@ impl eframe::App for ShelfApp {
                             }
                         });
 
-                    egui::CollapsingHeader::new(semibold("Activity", 12.5).color(p.text2))
+                    egui::CollapsingHeader::new(semibold(tr("Activity"), 12.5).color(p.text2))
                         .default_open(false)
                         .show(ui, |ui| {
                             if self.audit.is_empty() {
                                 ui.label(
-                                    RichText::new("No activity yet.")
+                                        RichText::new(tr("No activity yet."))
                                         .size(12.0)
                                         .color(p.text2),
                                 );
@@ -2230,7 +2402,7 @@ impl eframe::App for ShelfApp {
                                     ui.allocate_exact_size(vec2(44.0, 44.0), egui::Sense::hover());
                                 ui.painter().circle_filled(r.center(), 22.0, p.fill);
                                 arrow_tray(ui.painter(), r.center(), p.text3);
-                                ui.label(semibold("Nothing on the shelf", 13.5).color(p.text));
+                                ui.label(semibold(tr("Nothing on the shelf"), 13.5).color(p.text));
                                 ui.label(
                                     RichText::new("Items you receive show up here for an hour.")
                                         .size(12.0)
