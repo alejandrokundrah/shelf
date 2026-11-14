@@ -939,6 +939,9 @@ async fn join_room(
                 submission: file.submission,
             })
             .collect(),
+        assignments: Vec::new(),
+        questions: Vec::new(),
+        session_expires_at: None,
     };
     let owner_key = room.owner_public_key.clone();
     let room_files = room.files.clone();

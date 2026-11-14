@@ -34,6 +34,39 @@ pub struct RoomFile {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Assignment {
+    pub id: String,
+    pub title: String,
+    pub deadline: u64,
+    pub instructions: String,
+    pub required_files: Vec<String>,
+    pub submissions: Vec<Submission>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Submission {
+    pub assignment_id: String,
+    pub file_hash: String,
+    pub student_public_key: String,
+    pub submitted_at: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RoomQuestion {
+    pub id: String,
+    pub question: String,
+    pub asked_at: u64,
+    pub responses: Vec<QuestionResponse>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct QuestionResponse {
+    pub member_public_key: String,
+    pub answer: String,
+    pub answered_at: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Room {
     pub id: String,
     pub name: String,
@@ -43,6 +76,12 @@ pub struct Room {
     pub members: Vec<RoomMember>,
     #[serde(default)]
     pub files: Vec<RoomFile>,
+    #[serde(default)]
+    pub assignments: Vec<Assignment>,
+    #[serde(default)]
+    pub questions: Vec<RoomQuestion>,
+    #[serde(default)]
+    pub session_expires_at: Option<u64>,
 }
 
 impl Room {
@@ -77,6 +116,44 @@ impl Room {
         let before = self.files.len();
         self.files.retain(|file| file.hash != hash);
         self.files.len() != before
+    }
+
+    pub fn create_assignment(
+        &mut self,
+        requester: &str,
+        title: String,
+        deadline: u64,
+        instructions: String,
+        required_files: Vec<String>,
+    ) -> Option<Assignment> {
+        if !self.can_delete(requester) {
+            return None;
+        }
+        let assignment = Assignment {
+            id: format!("assignment-{}", uuid_like_id()),
+            title,
+            deadline,
+            instructions,
+            required_files,
+            submissions: Vec::new(),
+        };
+        self.assignments.push(assignment.clone());
+        Some(assignment)
+    }
+
+    pub fn record_submission(&mut self, submission: Submission) -> bool {
+        let Some(assignment) = self
+            .assignments
+            .iter_mut()
+            .find(|assignment| assignment.id == submission.assignment_id)
+        else {
+            return false;
+        };
+        assignment
+            .submissions
+            .retain(|existing| existing.student_public_key != submission.student_public_key);
+        assignment.submissions.push(submission);
+        true
     }
 }
 
@@ -124,6 +201,9 @@ impl Config {
                 role: RoomRole::Owner,
             }],
             files: Vec::new(),
+            assignments: Vec::new(),
+            questions: Vec::new(),
+            session_expires_at: None,
         };
         self.rooms.push(room.clone());
         room
@@ -186,7 +266,7 @@ fn room_code() -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Room, RoomFile, RoomMember, RoomRole};
+    use super::{Room, RoomFile, RoomMember, RoomRole, Submission};
 
     fn room() -> Room {
         Room {
@@ -207,6 +287,9 @@ mod tests {
                 uploaded_at: 1,
                 submission: None,
             }],
+            assignments: Vec::new(),
+            questions: Vec::new(),
+            session_expires_at: None,
         }
     }
 
@@ -247,5 +330,37 @@ mod tests {
         }));
         assert!(!room.delete_file("student", "def"));
         assert!(room.delete_file("teacher", "def"));
+    }
+
+    #[test]
+    fn owner_creates_assignments_and_students_submit_once() {
+        let mut room = room();
+        let assignment = room
+            .create_assignment(
+                "teacher",
+                "Lab report".into(),
+                100,
+                "Upload your report".into(),
+                vec!["report.pdf".into()],
+            )
+            .unwrap();
+        assert!(room.record_submission(Submission {
+            assignment_id: assignment.id.clone(),
+            file_hash: "abc".into(),
+            student_public_key: "student".into(),
+            submitted_at: 50,
+        }));
+        assert_eq!(room.assignments[0].submissions.len(), 1);
+        assert!(room.record_submission(Submission {
+            assignment_id: assignment.id,
+            file_hash: "def".into(),
+            student_public_key: "student".into(),
+            submitted_at: 60,
+        }));
+        assert_eq!(room.assignments[0].submissions.len(), 1);
+        assert_eq!(room.assignments[0].submissions[0].file_hash, "def");
+        assert!(room
+            .create_assignment("student", "Nope".into(), 100, String::new(), Vec::new())
+            .is_none());
     }
 }
