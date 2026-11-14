@@ -379,6 +379,47 @@ impl Room {
         Some(message)
     }
 
+    /// Human-readable reason an update was refused, shown to the person who tried it.
+    pub fn denial_reason(&self, requester: &str, update: &RoomUpdate) -> String {
+        let can_edit = self.can_edit(requester);
+        match update {
+            RoomUpdate::LockFile { hash } => {
+                if !can_edit {
+                    "Only the owner and editors can lock files".into()
+                } else if let Some(file) = self.files.iter().find(|f| f.hash == *hash) {
+                    match &file.locked_by {
+                        Some(holder) if holder != requester => {
+                            "This file is locked by another member".into()
+                        }
+                        _ => "File could not be locked".into(),
+                    }
+                } else {
+                    "That file is no longer in the room".into()
+                }
+            }
+            RoomUpdate::UnlockFile { .. } => "Only the member who locked a file can unlock it".into(),
+            RoomUpdate::SetFileDownloads { .. } if !can_edit => {
+                "Only the owner and editors can restrict downloads".into()
+            }
+            RoomUpdate::SetFileDownloads { .. } => "That file is no longer in the room".into(),
+            RoomUpdate::SetMemberRole { .. } | RoomUpdate::SetSessionExpiration { .. }
+                if !self.can_delete(requester) =>
+            {
+                "Only the room owner can do that".into()
+            }
+            RoomUpdate::AddNote { .. }
+            | RoomUpdate::AddLink { .. }
+            | RoomUpdate::AddAnnouncement { .. }
+            | RoomUpdate::SetAnnouncementPinned { .. }
+            | RoomUpdate::RemoveClipboard { .. }
+                if !can_edit =>
+            {
+                "Only the owner and editors can do that".into()
+            }
+            _ => "That room change is not allowed for your role".into(),
+        }
+    }
+
     pub fn add_file(&mut self, file: RoomFile) -> bool {
         if self.files.iter().any(|existing| existing.hash == file.hash) {
             return false;

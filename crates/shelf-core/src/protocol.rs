@@ -101,6 +101,10 @@ pub enum RoomMessage {
     Sync {
         room: Room,
     },
+    /// A member tells the owner it has left the room.
+    Leave {
+        room_id: String,
+    },
 }
 
 #[cfg(test)]
