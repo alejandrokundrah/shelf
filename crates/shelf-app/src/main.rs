@@ -1599,6 +1599,27 @@ impl eframe::App for ShelfApp {
                                                 });
                                             }
                                         }
+                                        for assignment in &room.assignments {
+                                            let submitted = assignment.submissions.len();
+                                            let expected = room
+                                                .members
+                                                .iter()
+                                                .filter(|member| {
+                                                    member.public_key != room.owner_public_key
+                                                })
+                                                .count();
+                                            ui.label(
+                                                RichText::new(format!(
+                                                    "{} · {}/{} submitted · deadline {}",
+                                                    assignment.title,
+                                                    submitted,
+                                                    expected,
+                                                    assignment.deadline
+                                                ))
+                                                .size(11.5)
+                                                .color(p.text2),
+                                            );
+                                        }
                                     }
                                 }
                             });
