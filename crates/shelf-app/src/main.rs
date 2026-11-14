@@ -474,6 +474,48 @@ fn load_icon() -> Option<egui::IconData> {
     })
 }
 
+/// The header logo as a small texture. It is decoded with the `png` crate and shrunk with a
+/// box filter, so no egui image-loader plugin is needed (without one, `egui::Image::from_bytes`
+/// shows a warning triangle instead of the picture).
+fn load_logo(ctx: &egui::Context) -> Option<egui::TextureHandle> {
+    const OUT: usize = 128;
+    let icon = load_icon()?;
+    let (w, h) = (icon.width as usize, icon.height as usize);
+    if w == 0 || h == 0 || icon.rgba.len() < w * h * 4 {
+        return None;
+    }
+    let mut out = vec![0u8; OUT * OUT * 4];
+    for oy in 0..OUT {
+        let y0 = oy * h / OUT;
+        let y1 = ((oy + 1) * h / OUT).clamp(y0 + 1, h);
+        for ox in 0..OUT {
+            let x0 = ox * w / OUT;
+            let x1 = ((ox + 1) * w / OUT).clamp(x0 + 1, w);
+            let (mut r, mut g, mut b, mut a, mut n) = (0u64, 0u64, 0u64, 0u64, 0u64);
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let i = (y * w + x) * 4;
+                    let alpha = icon.rgba[i + 3] as u64;
+                    r += icon.rgba[i] as u64 * alpha;
+                    g += icon.rgba[i + 1] as u64 * alpha;
+                    b += icon.rgba[i + 2] as u64 * alpha;
+                    a += alpha;
+                    n += 1;
+                }
+            }
+            if a > 0 {
+                let o = (oy * OUT + ox) * 4;
+                out[o] = (r / a) as u8;
+                out[o + 1] = (g / a) as u8;
+                out[o + 2] = (b / a) as u8;
+                out[o + 3] = (a / n) as u8;
+            }
+        }
+    }
+    let image = egui::ColorImage::from_rgba_unmultiplied([OUT, OUT], &out);
+    Some(ctx.load_texture("shelf-logo", image, egui::TextureOptions::LINEAR))
+}
+
 fn main() -> eframe::Result<()> {
     // Only one Shelf per PC: starting it a second time just exits quietly.
     let _single_instance = match std::net::TcpListener::bind("127.0.0.1:47831") {
@@ -1165,6 +1207,7 @@ struct ShelfApp {
     _tray: Option<TrayIcon>,
 
     styled: Option<(bool, bool)>,
+    logo: Option<egui::TextureHandle>,
 
     cur_w: f32,
     last_geo: Option<(Vec2, Pos2)>,
@@ -1226,6 +1269,7 @@ impl ShelfApp {
         let (handle, rx) =
             shelf_core::start(move || wake_ctx.request_repaint()).expect("failed to start Shelf");
         let (clip_tx, clip_rx) = channel();
+        let logo = load_logo(&ctx);
         sweep_inbox();
         install_fonts(&ctx);
         let settings = Settings::load();
@@ -1279,6 +1323,7 @@ impl ShelfApp {
             monitors_checked: now,
             _tray: tray,
             styled: None,
+            logo,
             cur_w: COLLAPSED_W,
             last_geo: None,
             last_active: now - Duration::from_secs(10),
@@ -1790,13 +1835,17 @@ impl eframe::App for ShelfApp {
                     ui.set_width(inner.width().max(1.0));
                     // Header.
                     ui.horizontal(|ui| {
-                        ui.add(
-                            egui::Image::from_bytes(
-                                "bytes://shelf-app-icon.png",
-                                include_bytes!("../assets/icon.png"),
-                            )
-                            .fit_to_exact_size(vec2(34.0, 34.0)),
-                        );
+                        match &self.logo {
+                            Some(tex) => {
+                                ui.add(egui::Image::new(egui::load::SizedTexture::new(
+                                    tex.id(),
+                                    vec2(34.0, 34.0),
+                                )));
+                            }
+                            None => {
+                                ui.allocate_space(vec2(34.0, 34.0));
+                            }
+                        }
                         ui.vertical(|ui| {
                             ui.spacing_mut().item_spacing.y = 0.0;
                             if !self.device_name.is_empty() {
