@@ -51,6 +51,7 @@ pub struct RoomMemberRecord {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum RoomMessage {
+    Unpair,
     Join {
         room_id: String,
         invite_code: String,

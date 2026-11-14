@@ -884,7 +884,13 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                     }
                 });
             }
-            Command::Unpair { public_key } => shared.remove_peer(&public_key),
+            Command::Unpair { public_key } => {
+                let target = shared.targets(&Target::Peer(public_key.clone())).into_iter().next();
+                shared.remove_peer(&public_key);
+                if let Some(target) = target {
+                    tokio::spawn(send_unpair(shared.clone(), target));
+                }
+            }
             Command::Send { target, payload } => {
                 let targets = shared.targets(&target);
                 if targets.is_empty() {
@@ -1004,6 +1010,12 @@ async fn handle_room_connection(shared: &Arc<Shared>, stream: TcpStream) -> Resu
     }
     .ok_or_else(|| anyhow!("room connection rejected from an unpaired device"))?;
     let message: RoomMessage = serde_json::from_slice(&ch.recv().await?)?;
+    if let RoomMessage::Unpair = message {
+        let remote_key = hex::encode(&ch.remote_static);
+        shared.remove_peer(&remote_key);
+        ch.send(b"OK").await?;
+        return Ok(());
+    }
     if let RoomMessage::Sync { room } = message {
         let remote_key = hex::encode(&ch.remote_static);
         let accepted = {
@@ -1204,6 +1216,24 @@ async fn handle_room_connection(shared: &Arc<Shared>, stream: TcpStream) -> Resu
         peer.name, room_id
     )));
     Ok(())
+}
+
+async fn send_unpair(shared: Arc<Shared>, dest: Dest) {
+    let result = async {
+        let key = shared.private_key()?;
+        let mut stream = timeout(Duration::from_secs(5), TcpStream::connect(dest.addr)).await??;
+        stream.write_u8(b'R').await?;
+        let mut ch = timeout(Duration::from_secs(10), SecureChannel::initiate(stream, &key)).await??;
+        if ch.remote_static != hex::decode(&dest.pk)? {
+            bail!("peer presented an unexpected identity");
+        }
+        ch.send(&serde_json::to_vec(&RoomMessage::Unpair)?).await?;
+        if ch.recv().await? != b"OK" { bail!("peer did not confirm removal"); }
+        Ok::<(), anyhow::Error>(())
+    }.await;
+    if let Err(error) = result {
+        shared.emit(Event::Info(format!("Removed {} locally; remote removal pending: {error}", dest.name)));
+    }
 }
 
 async fn broadcast_room_delete(
