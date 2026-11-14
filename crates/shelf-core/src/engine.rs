@@ -992,11 +992,21 @@ async fn join_room(
                 uploaded_by: file.uploaded_by,
                 uploaded_at: file.uploaded_at,
                 submission: file.submission,
+                version: 0,
+                previous_hash: None,
+                downloads_allowed: true,
+                locked_by: None,
             })
             .collect(),
         assignments: Vec::new(),
         questions: Vec::new(),
         session_expires_at: None,
+        notes: Vec::new(),
+        links: Vec::new(),
+        announcements: Vec::new(),
+        clipboard: Vec::new(),
+        activity: Vec::new(),
+        pending_members: Vec::new(),
     };
     let owner_key = room.owner_public_key.clone();
     let room_files = room.files.clone();
@@ -1256,6 +1266,10 @@ async fn handle_transfer(shared: &Arc<Shared>, stream: TcpStream) -> Result<()> 
                     .map(|d| d.as_secs())
                     .unwrap_or_default(),
                 submission: header.submission.clone(),
+                version: 0,
+                previous_hash: None,
+                downloads_allowed: true,
+                locked_by: None,
             });
             config.save()?;
         }
@@ -1514,6 +1528,10 @@ async fn send_room_file(
                 uploaded_by: uploader,
                 uploaded_at: timestamp,
                 submission,
+                version: 0,
+                previous_hash: None,
+                downloads_allowed: true,
+                locked_by: None,
             });
             let _ = config.save();
         }

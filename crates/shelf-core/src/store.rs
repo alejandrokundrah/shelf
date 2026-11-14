@@ -2,6 +2,10 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PairedPeer {
     pub name: String,
@@ -13,6 +17,9 @@ pub struct PairedPeer {
 pub enum RoomRole {
     Owner,
     Member,
+    Editor,
+    Contributor,
+    Viewer,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -31,6 +38,55 @@ pub struct RoomFile {
     pub uploaded_at: u64,
     #[serde(default)]
     pub submission: Option<String>,
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default)]
+    pub previous_hash: Option<String>,
+    #[serde(default = "default_true")]
+    pub downloads_allowed: bool,
+    #[serde(default)]
+    pub locked_by: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RoomNote {
+    pub id: String,
+    pub title: String,
+    pub body: String,
+    pub updated_by: String,
+    pub updated_at: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RoomLink {
+    pub title: String,
+    pub url: String,
+    pub added_by: String,
+    pub added_at: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RoomAnnouncement {
+    pub id: String,
+    pub message: String,
+    pub pinned: bool,
+    pub posted_by: String,
+    pub posted_at: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ClipboardEntry {
+    pub id: String,
+    pub content: String,
+    pub added_by: String,
+    pub added_at: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ActivityEntry {
+    pub message: String,
+    pub actor: String,
+    pub at: u64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -82,6 +138,18 @@ pub struct Room {
     pub questions: Vec<RoomQuestion>,
     #[serde(default)]
     pub session_expires_at: Option<u64>,
+    #[serde(default)]
+    pub notes: Vec<RoomNote>,
+    #[serde(default)]
+    pub links: Vec<RoomLink>,
+    #[serde(default)]
+    pub announcements: Vec<RoomAnnouncement>,
+    #[serde(default)]
+    pub clipboard: Vec<ClipboardEntry>,
+    #[serde(default)]
+    pub activity: Vec<ActivityEntry>,
+    #[serde(default)]
+    pub pending_members: Vec<RoomMember>,
 }
 
 impl Room {
@@ -91,6 +159,62 @@ impl Room {
 
     pub fn has_member(&self, public_key: &str) -> bool {
         self.members.iter().any(|m| m.public_key == public_key)
+    }
+
+    pub fn role_for(&self, public_key: &str) -> Option<RoomRole> {
+        self.members
+            .iter()
+            .find(|member| member.public_key == public_key)
+            .map(|member| member.role)
+    }
+
+    pub fn can_upload(&self, public_key: &str) -> bool {
+        matches!(
+            self.role_for(public_key),
+            Some(RoomRole::Owner | RoomRole::Editor | RoomRole::Contributor | RoomRole::Member)
+        )
+    }
+
+    pub fn can_edit(&self, public_key: &str) -> bool {
+        matches!(
+            self.role_for(public_key),
+            Some(RoomRole::Owner | RoomRole::Editor)
+        )
+    }
+
+    pub fn can_download(&self, public_key: &str, hash: &str) -> bool {
+        self.has_member(public_key)
+            && self
+                .files
+                .iter()
+                .find(|file| file.hash == hash)
+                .map(|file| file.downloads_allowed)
+                .unwrap_or(false)
+    }
+
+    pub fn lock_file(&mut self, requester: &str, hash: &str) -> bool {
+        if !self.can_edit(requester) {
+            return false;
+        }
+        let Some(file) = self.files.iter_mut().find(|file| file.hash == hash) else {
+            return false;
+        };
+        if file.locked_by.as_deref().is_some_and(|owner| owner != requester) {
+            return false;
+        }
+        file.locked_by = Some(requester.to_string());
+        true
+    }
+
+    pub fn unlock_file(&mut self, requester: &str, hash: &str) -> bool {
+        let Some(file) = self.files.iter_mut().find(|file| file.hash == hash) else {
+            return false;
+        };
+        if file.locked_by.as_deref() != Some(requester) {
+            return false;
+        }
+        file.locked_by = None;
+        true
     }
 
     pub fn add_member(&mut self, member: RoomMember) -> bool {
@@ -105,6 +229,21 @@ impl Room {
         if self.files.iter().any(|existing| existing.hash == file.hash) {
             return false;
         }
+        let mut file = file;
+        file.version = self
+            .files
+            .iter()
+            .filter(|existing| existing.name == file.name)
+            .map(|existing| existing.version)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        file.previous_hash = self
+            .files
+            .iter()
+            .filter(|existing| existing.name == file.name)
+            .max_by_key(|existing| existing.version)
+            .map(|existing| existing.hash.clone());
         self.files.push(file);
         true
     }
@@ -204,6 +343,12 @@ impl Config {
             assignments: Vec::new(),
             questions: Vec::new(),
             session_expires_at: None,
+            notes: Vec::new(),
+            links: Vec::new(),
+            announcements: Vec::new(),
+            clipboard: Vec::new(),
+            activity: Vec::new(),
+            pending_members: Vec::new(),
         };
         self.rooms.push(room.clone());
         room
@@ -286,10 +431,20 @@ mod tests {
                 uploaded_by: "student".into(),
                 uploaded_at: 1,
                 submission: None,
+                version: 1,
+                previous_hash: None,
+                downloads_allowed: true,
+                locked_by: None,
             }],
             assignments: Vec::new(),
             questions: Vec::new(),
             session_expires_at: None,
+            notes: Vec::new(),
+            links: Vec::new(),
+            announcements: Vec::new(),
+            clipboard: Vec::new(),
+            activity: Vec::new(),
+            pending_members: Vec::new(),
         }
     }
 
@@ -327,6 +482,10 @@ mod tests {
             uploaded_by: "student".into(),
             uploaded_at: 2,
             submission: None,
+            version: 0,
+            previous_hash: None,
+            downloads_allowed: true,
+            locked_by: None,
         }));
         assert!(!room.delete_file("student", "def"));
         assert!(room.delete_file("teacher", "def"));
@@ -362,5 +521,34 @@ mod tests {
         assert!(room
             .create_assignment("student", "Nope".into(), 100, String::new(), Vec::new())
             .is_none());
+    }
+
+    #[test]
+    fn team_roles_versions_and_locks_are_enforced() {
+        let mut room = room();
+        room.add_member(RoomMember {
+            name: "Teacher".into(),
+            public_key: "teacher".into(),
+            role: RoomRole::Owner,
+        });
+        room.members[0].role = RoomRole::Editor;
+        assert!(room.lock_file("student", "abc"));
+        assert!(!room.lock_file("teacher", "abc"));
+        assert!(room.unlock_file("student", "abc"));
+        assert!(room.add_file(RoomFile {
+            hash: "new-hash".into(),
+            name: "worksheet.pdf".into(),
+            size: 50,
+            uploaded_by: "student".into(),
+            uploaded_at: 2,
+            submission: None,
+            version: 0,
+            previous_hash: None,
+            downloads_allowed: true,
+            locked_by: None,
+        }));
+        let latest = room.files.iter().find(|file| file.hash == "new-hash").unwrap();
+        assert_eq!(latest.version, 2);
+        assert_eq!(latest.previous_hash.as_deref(), Some("abc"));
     }
 }
