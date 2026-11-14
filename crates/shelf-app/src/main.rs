@@ -42,6 +42,8 @@ struct Settings {
     monitor: usize,
     auto_copy: bool,
     pinned: bool,
+    /// Material 3 look instead of the macOS look.
+    material: bool,
 }
 
 impl Settings {
@@ -50,7 +52,7 @@ impl Settings {
     }
 
     fn load() -> Settings {
-        let mut s = Settings { side: Side::Right, monitor: usize::MAX, auto_copy: true, pinned: false };
+        let mut s = Settings { side: Side::Right, monitor: usize::MAX, auto_copy: true, pinned: false, material: false };
         if let Ok(text) = std::fs::read_to_string(Self::path()) {
             for line in text.lines() {
                 let Some((k, v)) = line.split_once('=') else { continue };
@@ -59,6 +61,7 @@ impl Settings {
                     "monitor" => s.monitor = v.trim().parse().unwrap_or(usize::MAX),
                     "auto_copy" => s.auto_copy = v.trim() != "0",
                     "pinned" => s.pinned = v.trim() == "1",
+                    "style" => s.material = v.trim() == "material",
                     _ => {}
                 }
             }
@@ -68,11 +71,12 @@ impl Settings {
 
     fn save(&self) {
         let text = format!(
-            "side={}\nmonitor={}\nauto_copy={}\npinned={}\n",
+            "side={}\nmonitor={}\nauto_copy={}\npinned={}\nstyle={}\n",
             if self.side == Side::Left { "left" } else { "right" },
             if self.monitor == usize::MAX { -1 } else { self.monitor as i64 },
             if self.auto_copy { 1 } else { 0 },
             if self.pinned { 1 } else { 0 },
+            if self.material { "material" } else { "macos" },
         );
         let _ = std::fs::create_dir_all(shelf_core::data_dir());
         let _ = std::fs::write(Self::path(), text);
@@ -307,6 +311,10 @@ const CARD_RADIUS: f32 = 18.0;
 #[derive(Clone, Copy)]
 struct Pal {
     dark: bool,
+    /// True for the Material 3 look.
+    m3: bool,
+    /// Text and icons drawn on top of `accent` (white on macOS blue, dark on M3 dark primary).
+    on_accent: Color32,
     panel: Color32,
     panel_edge: Color32,
     card: Color32,
@@ -330,6 +338,8 @@ impl Pal {
     fn dark() -> Self {
         Self {
             dark: true,
+            m3: false,
+            on_accent: Color32::WHITE,
             panel: Color32::from_rgba_unmultiplied(30, 30, 34, 232),
             panel_edge: Color32::from_white_alpha(40),
             card: Color32::from_white_alpha(14),
@@ -353,6 +363,8 @@ impl Pal {
     fn light() -> Self {
         Self {
             dark: false,
+            m3: false,
+            on_accent: Color32::WHITE,
             panel: Color32::from_rgba_unmultiplied(246, 246, 249, 234),
             panel_edge: Color32::from_black_alpha(26),
             card: Color32::from_white_alpha(185),
@@ -372,6 +384,66 @@ impl Pal {
             fill_press: Color32::from_black_alpha(36),
         }
     }
+
+    /// Material 3 colour roles (blue seed), dark scheme.
+    fn m3_dark() -> Self {
+        Self {
+            dark: true,
+            m3: true,
+            on_accent: Color32::from_rgb(0, 50, 88),
+            panel: Color32::from_rgb(29, 32, 36),            // surface container
+            panel_edge: Color32::TRANSPARENT,
+            card: Color32::from_rgb(39, 42, 47),             // surface container high
+            card_edge: Color32::TRANSPARENT,
+            field: Color32::from_rgb(50, 53, 58),            // surface container highest
+            text: Color32::from_rgb(226, 226, 230),          // on surface
+            text2: Color32::from_rgb(195, 199, 207),         // on surface variant
+            text3: Color32::from_rgb(141, 145, 153),         // outline
+            accent: Color32::from_rgb(159, 202, 255),        // primary
+            good: Color32::from_rgb(109, 213, 140),
+            red: Color32::from_rgb(255, 180, 171),           // error
+            orange: Color32::from_rgb(255, 183, 77),
+            purple: Color32::from_rgb(214, 186, 255),
+            sep: Color32::from_rgb(67, 71, 78),              // outline variant
+            fill: Color32::from_rgb(59, 72, 88),             // secondary container
+            fill_hover: Color32::from_rgb(72, 84, 101),      // + 8% state layer
+            fill_press: Color32::from_rgb(78, 91, 107),      // + 12% state layer
+        }
+    }
+
+    /// Material 3 colour roles (blue seed), light scheme.
+    fn m3_light() -> Self {
+        Self {
+            dark: false,
+            m3: true,
+            on_accent: Color32::WHITE,
+            panel: Color32::from_rgb(237, 237, 241),
+            panel_edge: Color32::TRANSPARENT,
+            card: Color32::from_rgb(226, 226, 230),
+            card_edge: Color32::TRANSPARENT,
+            field: Color32::from_rgb(226, 226, 230),
+            text: Color32::from_rgb(26, 28, 30),
+            text2: Color32::from_rgb(67, 71, 78),
+            text3: Color32::from_rgb(115, 119, 127),
+            accent: Color32::from_rgb(0, 97, 164),
+            good: Color32::from_rgb(27, 109, 47),
+            red: Color32::from_rgb(186, 26, 26),
+            orange: Color32::from_rgb(180, 95, 0),
+            purple: Color32::from_rgb(110, 57, 200),
+            sep: Color32::from_rgb(195, 199, 207),
+            fill: Color32::from_rgb(215, 227, 248),
+            fill_hover: Color32::from_rgb(199, 211, 232),
+            fill_press: Color32::from_rgb(191, 203, 223),
+        }
+    }
+}
+
+fn panel_radius() -> f32 {
+    if pal().m3 { 28.0 } else { PANEL_RADIUS }
+}
+
+fn card_radius() -> f32 {
+    if pal().m3 { 16.0 } else { CARD_RADIUS }
 }
 
 thread_local! {
@@ -498,12 +570,12 @@ fn apply_style(ctx: &egui::Context, p: Pal) {
 
     style.visuals = if p.dark { egui::Visuals::dark() } else { egui::Visuals::light() };
     let v = &mut style.visuals;
-    let r = Rounding::same(10.0);
+    let r = Rounding::same(if p.m3 { 8.0 } else { 10.0 });
     v.panel_fill = Color32::TRANSPARENT;
     v.window_fill = p.panel;
     v.window_stroke = Stroke::new(1.0_f32, p.panel_edge);
-    v.window_rounding = Rounding::same(18.0);
-    v.menu_rounding = Rounding::same(14.0);
+    v.window_rounding = Rounding::same(if p.m3 { 28.0 } else { 18.0 });
+    v.menu_rounding = Rounding::same(if p.m3 { 8.0 } else { 14.0 });
     v.extreme_bg_color = p.field;
     v.faint_bg_color = p.card;
     v.hyperlink_color = p.accent;
@@ -547,7 +619,7 @@ fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::none()
         .fill(p.card)
         .stroke(Stroke::new(1.0_f32, p.card_edge))
-        .rounding(CARD_RADIUS)
+        .rounding(card_radius())
         .inner_margin(egui::Margin::symmetric(14.0, 12.0))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -622,7 +694,7 @@ fn pin_button(ui: &mut egui::Ui, pinned: &mut bool) -> egui::Response {
         *pinned = !*pinned;
     }
     let c = rect.center();
-    let col = if *pinned { Color32::WHITE } else { pal().text2 };
+    let col = if *pinned { pal().on_accent } else { pal().text2 };
     let s = Stroke::new(1.5_f32, col);
     let p = ui.painter();
     p.rect_stroke(Rect::from_center_size(c + vec2(0.0, -3.5), vec2(6.0, 8.0)), 2.0, s);
@@ -631,8 +703,55 @@ fn pin_button(ui: &mut egui::Ui, pinned: &mut bool) -> egui::Response {
     resp.on_hover_text(if *pinned { "Pinned open" } else { "Keep open" })
 }
 
-/// macOS-style switch.
+/// Material 3 switch: 52x32 track, thumb grows and shows a check when on.
+fn m3_switch(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
+    let p = pal();
+    let (rect, mut resp) = ui.allocate_exact_size(vec2(52.0, 32.0), egui::Sense::click());
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    let t = ui.ctx().animate_bool_responsive(resp.id, *on);
+    let off_track = p.card.lerp_to_gamma(p.field, 0.6);
+    let track = off_track.lerp_to_gamma(p.accent, t);
+    let outline = p.text3.gamma_multiply(1.0 - t);
+    let radius = egui::lerp(8.0..=12.0, t);
+    let x = egui::lerp((rect.left() + 16.0)..=(rect.right() - 16.0), t);
+    let center = Pos2::new(x, rect.center().y);
+    let thumb = p.text3.lerp_to_gamma(p.on_accent, t);
+    let painter = ui.painter();
+    painter.rect_filled(rect, 16.0, track);
+    if t < 0.99 {
+        painter.rect_stroke(rect.shrink(1.0), 15.0, Stroke::new(2.0_f32, outline));
+    }
+    // Hover/press state layer around the thumb.
+    if resp.is_pointer_button_down_on() || resp.hovered() {
+        let layer = if on_state(t) { p.accent } else { p.text };
+        painter.circle_filled(center, 20.0, layer.gamma_multiply(if resp.is_pointer_button_down_on() { 0.12 } else { 0.08 }));
+    }
+    painter.circle_filled(center, radius, thumb);
+    if t > 0.5 {
+        let s = Stroke::new(2.0_f32, p.accent.gamma_multiply(t));
+        painter.line_segment([center + vec2(-4.5, 0.0), center + vec2(-1.5, 3.2)], s);
+        painter.line_segment([center + vec2(-1.5, 3.2), center + vec2(4.5, -3.4)], s);
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+fn on_state(t: f32) -> bool {
+    t > 0.5
+}
+
+/// Switch in the current style (macOS or Material 3).
 fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
+    if pal().m3 {
+        return m3_switch(ui, on);
+    }
+    mac_switch(ui, on)
+}
+
+/// macOS-style switch.
+fn mac_switch(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     let p = pal();
     let (rect, mut resp) = ui.allocate_exact_size(vec2(42.0, 25.0), egui::Sense::click());
     if resp.clicked() {
@@ -668,6 +787,66 @@ enum Look {
     Primary,
     Glass,
     Tint(Color32),
+    /// A choice in a group: a filter chip in Material 3, a capsule on macOS.
+    Chip(bool),
+}
+
+/// Material 3 button or filter chip with hover/press state layers.
+fn m3_button(
+    ui: &mut egui::Ui,
+    label: &str,
+    look: Look,
+    height: f32,
+    width: Option<f32>,
+    enabled: bool,
+) -> egui::Response {
+    let p = pal();
+    let font = sb_font(if height >= 34.0 { 14.0 } else { 12.5 });
+    let is_chip = matches!(look, Look::Chip(_));
+    let selected = matches!(look, Look::Chip(true));
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), Color32::WHITE);
+    let check_w = if selected { 18.0 } else { 0.0 };
+    let pad = if is_chip { 12.0 } else { height * 0.6 };
+    let w = width.unwrap_or(galley.size().x + check_w + pad * 2.0);
+    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, height), sense);
+    let down = enabled && resp.is_pointer_button_down_on();
+    let hot = enabled && resp.hovered();
+    let radius = if is_chip { 8.0 } else { rect.height() / 2.0 };
+
+    let (mut base, mut fg, outline) = match look {
+        Look::Primary => (p.accent, p.on_accent, None),
+        Look::Glass => (p.fill, p.text, None),
+        Look::Tint(c) => (c.gamma_multiply(0.16), c, None),
+        Look::Chip(true) => (p.fill, p.text, None),
+        Look::Chip(false) => (Color32::TRANSPARENT, p.text2, Some(p.text3)),
+    };
+    if !enabled {
+        base = p.text.gamma_multiply(0.12);
+        fg = p.text.gamma_multiply(0.38);
+    }
+    let painter = ui.painter();
+    painter.rect_filled(rect, radius, base);
+    if let Some(o) = outline {
+        painter.rect_stroke(rect.shrink(0.5), radius, Stroke::new(1.0_f32, o));
+    }
+    if down {
+        painter.rect_filled(rect, radius, fg.gamma_multiply(0.12));
+    } else if hot {
+        painter.rect_filled(rect, radius, fg.gamma_multiply(0.08));
+    }
+
+    let content_w = check_w + galley.size().x;
+    let start_x = rect.center().x - content_w / 2.0;
+    let cy = rect.center().y;
+    if selected {
+        let c = Pos2::new(start_x + 7.0, cy);
+        let s = Stroke::new(1.8_f32, fg);
+        painter.line_segment([c + vec2(-4.0, 0.0), c + vec2(-1.2, 3.0)], s);
+        painter.line_segment([c + vec2(-1.2, 3.0), c + vec2(4.5, -3.2)], s);
+    }
+    painter.text(Pos2::new(start_x + check_w, cy), Align2::LEFT_CENTER, label, font, fg);
+    if enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp }
 }
 
 /// Capsule button. `width` of `None` hugs the label.
@@ -680,6 +859,14 @@ fn capsule(
     enabled: bool,
 ) -> egui::Response {
     let p = pal();
+    if p.m3 {
+        return m3_button(ui, label, look, height, width, enabled);
+    }
+    let look = match look {
+        Look::Chip(true) => Look::Primary,
+        Look::Chip(false) => Look::Glass,
+        other => other,
+    };
     let font = sb_font(if height >= 34.0 { 14.0 } else { 12.0 });
     let galley = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), Color32::WHITE);
     let w = width.unwrap_or(galley.size().x + height * 0.95);
@@ -694,6 +881,7 @@ fn capsule(
             p.text,
         ),
         Look::Tint(c) => (c.gamma_multiply(if down { 0.34 } else if hot { 0.26 } else { 0.16 }), c),
+        Look::Chip(_) => (p.fill, p.text), // already mapped to Primary/Glass above
     };
     if let Look::Primary = look {
         if down {
@@ -784,16 +972,24 @@ fn draw_kind_icon(painter: &egui::Painter, rect: Rect, kind: &ItemKind) {
         ItemKind::Text => p.orange,
         ItemKind::Image => p.purple,
     };
-    painter.rect_filled(rect, 12.0, color);
-    // Soft top sheen so the tile reads as glass rather than flat paint.
-    let sheen = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.center().y));
-    painter.rect_filled(
-        sheen,
-        Rounding { nw: 12.0, ne: 12.0, sw: 0.0, se: 0.0 },
-        Color32::from_white_alpha(22),
-    );
+    // Material 3: flat tonal tile with a dark glyph. macOS: glossy tile with a white glyph.
+    let glyph = if p.m3 {
+        let tile = if p.dark { color.gamma_multiply(0.28) } else { color.gamma_multiply(0.18) };
+        painter.rect_filled(rect, 14.0, tile);
+        color
+    } else {
+        painter.rect_filled(rect, 12.0, color);
+        // Soft top sheen so the tile reads as glass rather than flat paint.
+        let sheen = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.center().y));
+        painter.rect_filled(
+            sheen,
+            Rounding { nw: 12.0, ne: 12.0, sw: 0.0, se: 0.0 },
+            Color32::from_white_alpha(22),
+        );
+        Color32::WHITE
+    };
     let c = rect.center();
-    let s = Stroke::new(1.8_f32, Color32::WHITE);
+    let s = Stroke::new(1.8_f32, glyph);
     match kind {
         ItemKind::File => {
             painter.rect_stroke(Rect::from_center_size(c, vec2(13.0, 17.0)), 3.0, s);
@@ -807,7 +1003,7 @@ fn draw_kind_icon(painter: &egui::Painter, rect: Rect, kind: &ItemKind) {
         }
         ItemKind::Image => {
             painter.rect_stroke(Rect::from_center_size(c, vec2(20.0, 15.0)), 3.5, s);
-            painter.circle_filled(c + vec2(-4.0, -2.0), 1.9, Color32::WHITE);
+            painter.circle_filled(c + vec2(-4.0, -2.0), 1.9, glyph);
             painter.add(egui::Shape::line(
                 vec![c + vec2(-8.0, 5.5), c + vec2(-2.0, 0.5), c + vec2(1.5, 3.5), c + vec2(4.5, 0.5), c + vec2(8.0, 5.0)],
                 s,
@@ -961,13 +1157,14 @@ struct ShelfApp {
     pinned: bool,
     side: Side,
     monitor: usize,
+    material: bool,
     saved_settings: Settings,
 
     monitors: Vec<monitors::Monitor>,
     monitors_checked: Instant,
     _tray: Option<TrayIcon>,
 
-    styled_dark: Option<bool>,
+    styled: Option<(bool, bool)>,
 
     cur_w: f32,
     last_geo: Option<(Vec2, Pos2)>,
@@ -1076,11 +1273,12 @@ impl ShelfApp {
             pinned: settings.pinned,
             side: settings.side,
             monitor: settings.monitor,
+            material: settings.material,
             saved_settings: settings,
             monitors: monitors::list(),
             monitors_checked: now,
             _tray: tray,
-            styled_dark: None,
+            styled: None,
             cur_w: COLLAPSED_W,
             last_geo: None,
             last_active: now - Duration::from_secs(10),
@@ -1428,11 +1626,16 @@ impl eframe::App for ShelfApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Follow the system light/dark setting.
         let dark = detect_dark(ctx);
-        let p = if dark { Pal::dark() } else { Pal::light() };
+        let p = match (self.material, dark) {
+            (false, true) => Pal::dark(),
+            (false, false) => Pal::light(),
+            (true, true) => Pal::m3_dark(),
+            (true, false) => Pal::m3_light(),
+        };
         set_pal(p);
-        if self.styled_dark != Some(dark) {
+        if self.styled != Some((dark, self.material)) {
             apply_style(ctx, p);
-            self.styled_dark = Some(dark);
+            self.styled = Some((dark, self.material));
         }
 
         self.drain_events();
@@ -1556,22 +1759,25 @@ impl eframe::App for ShelfApp {
                 spread: 0.0,
                 color: Color32::from_black_alpha(if p.dark { 120 } else { 55 }),
             };
-            ui.painter().add(shadow.as_shape(panel, PANEL_RADIUS));
-            ui.painter().rect_filled(panel, PANEL_RADIUS, p.panel);
-            // Inner highlight along the rim, like light catching the edge of the glass.
-            ui.painter().rect_stroke(
-                panel.shrink(0.5),
-                PANEL_RADIUS,
-                Stroke::new(1.0_f32, p.panel_edge),
-            );
-            ui.painter().rect_stroke(
-                panel.shrink(1.5),
-                PANEL_RADIUS - 1.0,
-                Stroke::new(
-                    1.0_f32,
-                    if p.dark { Color32::from_white_alpha(8) } else { Color32::from_white_alpha(120) },
-                ),
-            );
+            let radius = panel_radius();
+            ui.painter().add(shadow.as_shape(panel, radius));
+            ui.painter().rect_filled(panel, radius, p.panel);
+            if !p.m3 {
+                // Inner highlight along the rim, like light catching the edge of the glass.
+                ui.painter().rect_stroke(
+                    panel.shrink(0.5),
+                    radius,
+                    Stroke::new(1.0_f32, p.panel_edge),
+                );
+                ui.painter().rect_stroke(
+                    panel.shrink(1.5),
+                    radius - 1.0,
+                    Stroke::new(
+                        1.0_f32,
+                        if p.dark { Color32::from_white_alpha(8) } else { Color32::from_white_alpha(120) },
+                    ),
+                );
+            }
 
             let inner = panel.shrink2(vec2(16.0, 16.0));
             ui.allocate_new_ui(egui::UiBuilder::new().max_rect(inner), |ui| {
@@ -1698,8 +1904,7 @@ impl eframe::App for ShelfApp {
                         ui.horizontal_wrapped(|ui| {
                             ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
                             let all = matches!(self.target, Target::All);
-                            let look = if all { Look::Primary } else { Look::Glass };
-                            if capsule(ui, tr("All devices"), look, 28.0, None, true).clicked() {
+                            if capsule(ui, tr("All devices"), Look::Chip(all), 28.0, None, true).clicked() {
                                 self.target = Target::All;
                             }
                             for dev in &paired {
@@ -1708,8 +1913,7 @@ impl eframe::App for ShelfApp {
                                     Target::Peer(k) => k == &dev.public_key,
                                     Target::Peers(keys) => keys.iter().any(|k| k == &dev.public_key),
                                 };
-                                let look = if selected { Look::Primary } else { Look::Glass };
-                                if capsule(ui, &shorten(&dev.name, 18), look, 28.0, None, true)
+                                if capsule(ui, &shorten(&dev.name, 18), Look::Chip(selected), 28.0, None, true)
                                     .clicked()
                                 {
                                     let mut keys = match &self.target {
@@ -1785,19 +1989,28 @@ impl eframe::App for ShelfApp {
                             }
                         });
                         hairline(ui);
+                        ui.label(RichText::new("Style").size(13.5).color(p.text));
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                            if capsule(ui, "macOS", Look::Chip(!self.material), 28.0, None, true).clicked() {
+                                self.material = false;
+                            }
+                            if capsule(ui, "Material 3", Look::Chip(self.material), 28.0, None, true).clicked() {
+                                self.material = true;
+                            }
+                        });
+                        hairline(ui);
                         ui.label(RichText::new("Screen edge").size(13.5).color(p.text));
                         ui.horizontal_wrapped(|ui| {
                             ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
                             for (s, label) in [(Side::Left, "Left"), (Side::Right, "Right")] {
-                                let look = if self.side == s { Look::Primary } else { Look::Glass };
-                                if capsule(ui, label, look, 28.0, None, true).clicked() {
+                                if capsule(ui, label, Look::Chip(self.side == s), 28.0, None, true).clicked() {
                                     self.side = s;
                                 }
                             }
                             if monitor_names.len() > 1 {
                                 for (i, name) in monitor_names.iter().enumerate() {
-                                    let look = if current_monitor == i { Look::Primary } else { Look::Glass };
-                                    if capsule(ui, name, look, 28.0, None, true).clicked() {
+                                    if capsule(ui, name, Look::Chip(current_monitor == i), 28.0, None, true).clicked() {
                                         self.monitor = i;
                                     }
                                 }
@@ -2931,6 +3144,7 @@ impl eframe::App for ShelfApp {
             monitor: self.monitor,
             auto_copy: self.auto_copy,
             pinned: self.pinned,
+            material: self.material,
         };
         if current != self.saved_settings {
             current.save();
