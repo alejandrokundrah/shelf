@@ -774,21 +774,22 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                 }
             }
             Command::DeleteRoom { room_id } => {
-                let (targets, allowed) = {
+                let (member_keys, allowed) = {
                     let config = shared.config.lock().unwrap();
                     let allowed = config.rooms.iter().any(|room| {
                         room.id == room_id && room.owner_public_key == config.public_key
                     });
-                    let targets = config.rooms.iter().find(|room| room.id == room_id)
-                        .map(|room| Target::Peers(room.members.iter()
+                    let member_keys = config.rooms.iter().find(|room| room.id == room_id)
+                        .map(|room| room.members.iter()
                             .filter(|member| member.public_key != config.public_key)
-                            .map(|member| member.public_key.clone()).collect()))
-                        .map(|target| shared.targets(&target)).unwrap_or_default();
-                    (targets, allowed)
+                            .map(|member| member.public_key.clone()).collect())
+                        .unwrap_or_default();
+                    (member_keys, allowed)
                 };
                 if !allowed {
                     shared.emit(Event::Error("Only the room owner can delete this room".into()));
                 } else {
+                    let targets = shared.targets(&Target::Peers(member_keys));
                     {
                         let mut config = shared.config.lock().unwrap();
                         config.rooms.retain(|room| room.id != room_id);
