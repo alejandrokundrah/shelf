@@ -713,6 +713,15 @@ fn room_qr(ui: &mut egui::Ui, room: &Room) {
     }
 }
 
+fn parse_room_invite(value: &str) -> Option<(String, String)> {
+    let rest = value.trim().strip_prefix("shelf://room/")?;
+    let (room_id, invite_code) = rest.split_once('/')?;
+    if room_id.is_empty() || invite_code.is_empty() {
+        return None;
+    }
+    Some((room_id.to_string(), invite_code.to_string()))
+}
+
 impl ShelfApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let ctx = cc.egui_ctx.clone();
@@ -1063,6 +1072,10 @@ impl eframe::App for ShelfApp {
         }
 
         self.drain_events();
+        if let Some((room_id, invite_code)) = parse_room_invite(&self.room_code_input) {
+            self.room_id_input = room_id;
+            self.room_code_input = invite_code;
+        }
 
         // Files dropped onto the shelf are sent to the chosen device(s).
         let dropped: Vec<PathBuf> = ctx.input(|i| {
