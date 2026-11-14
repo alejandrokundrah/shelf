@@ -37,11 +37,11 @@ Name: "{autodesktop}\Shelf"; Filename: "{app}\shelf.exe"; IconFilename: "{app}\s
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Shelf"; ValueData: """{app}\shelf.exe"""; Flags: uninsdeletevalue; Tasks: startup
 Root: HKCU; Subkey: "Software\Classes\*\shell\Send with Shelf"; ValueType: string; ValueName: "MUIVerb"; ValueData: "Send with Shelf"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\*\shell\Send with Shelf"; ValueType: string; ValueName: "MultiSelectModel"; ValueData: "Player"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\*\shell\Send with Shelf\command"; ValueType: string; ValueName: ""; ValueData: """{app}\shelf.exe"" --send %*"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\*\shell\Send with Shelf"; ValueType: string; ValueName: "MultiSelectModel"; ValueData: "Document"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\*\shell\Send with Shelf\command"; ValueType: string; ValueName: ""; ValueData: """{app}\shelf.exe"" --send ""%1"""; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\Directory\shell\Send with Shelf"; ValueType: string; ValueName: "MUIVerb"; ValueData: "Send with Shelf"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\Directory\shell\Send with Shelf"; ValueType: string; ValueName: "MultiSelectModel"; ValueData: "Player"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\Directory\shell\Send with Shelf\command"; ValueType: string; ValueName: ""; ValueData: """{app}\shelf.exe"" --send %*"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\Send with Shelf"; ValueType: string; ValueName: "MultiSelectModel"; ValueData: "Document"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\Send with Shelf\command"; ValueType: string; ValueName: ""; ValueData: """{app}\shelf.exe"" --send ""%1"""; Flags: uninsdeletekey
 
 [Run]
 ; Lets other PCs on private networks reach Shelf without a firewall pop-up.

@@ -623,6 +623,37 @@ fn send_to_running_instance(paths: &[PathBuf]) -> bool {
     false
 }
 
+/// Older installers registered the Explorer verb as `shelf.exe --send %*`. Explorer does not
+/// expand `%*` for a shell verb, so Shelf received the literal text and sent nothing. If the verb
+/// is installed, rewrite it to the working form (one launch per selected item, path in `%1`).
+#[cfg(windows)]
+fn repair_explorer_verb() {
+    use std::os::windows::process::CommandExt;
+    const NO_WINDOW: u32 = 0x0800_0000;
+    let Ok(exe) = std::env::current_exe() else { return };
+    let exe = exe.to_string_lossy().to_string();
+    let run = |args: &[&str]| {
+        std::process::Command::new("reg")
+            .args(args)
+            .creation_flags(NO_WINDOW)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    };
+    let verb = "Software\\Classes\\Directory\\shell\\Send with Shelf";
+    if !run(&["query", &format!("HKCU\\{verb}\\command")]) {
+        return; // Not installed through the installer; leave the registry alone.
+    }
+    let command = format!("\"{exe}\" --send \"%1\"");
+    for class in ["*", "Directory"] {
+        let key = format!("HKCU\\Software\\Classes\\{class}\\shell\\Send with Shelf");
+        run(&["add", &key, "/v", "MultiSelectModel", "/d", "Document", "/f"]);
+        run(&["add", &format!("{key}\\command"), "/ve", "/d", &command, "/f"]);
+    }
+}
+
 fn main() -> eframe::Result<()> {
     let mut args = std::env::args_os().skip(1);
     let send_paths: Vec<PathBuf> = if args.next().as_deref() == Some(std::ffi::OsStr::new("--send"))
@@ -645,6 +676,8 @@ fn main() -> eframe::Result<()> {
             return Ok(());
         }
     };
+    #[cfg(windows)]
+    std::thread::spawn(repair_explorer_verb);
     let (control_tx, control_rx) = channel();
     std::thread::spawn(move || {
         for stream in single_instance.incoming().flatten() {
