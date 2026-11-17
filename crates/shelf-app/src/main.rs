@@ -207,6 +207,32 @@ fn tr(key: &'static str) -> &'static str {
         (Locale::French, "Send Clipboard") => "Envoyer le presse-papiers",
         (Locale::Spanish, "Send Clipboard") => "Enviar portapapeles",
         (Locale::German, "Send Clipboard") => "Zwischenablage senden",
+        (Locale::French, "Drop files") => "Déposer des fichiers",
+        (Locale::Spanish, "Drop files") => "Suelta archivos",
+        (Locale::German, "Drop files") => "Dateien ablegen",
+        (Locale::French, "Drag here to send") => "Glisser ici pour envoyer",
+        (Locale::Spanish, "Drag here to send") => "Arrastra aquí para enviar",
+        (Locale::German, "Drag here to send") => "Zum Senden hierher ziehen",
+        (Locale::French, "Clipboard") => "Presse-papiers",
+        (Locale::Spanish, "Clipboard") => "Portapapeles",
+        (Locale::German, "Clipboard") => "Zwischenablage",
+        (Locale::French, "Send") => "Envoyer",
+        (Locale::Spanish, "Send") => "Enviar",
+        (Locale::German, "Send") => "Senden",
+        (Locale::French, "online") => "en ligne",
+        (Locale::Spanish, "online") => "en línea",
+        (Locale::French, "Transfers") => "Transferts",
+        (Locale::Spanish, "Transfers") => "Transferencias",
+        (Locale::German, "Transfers") => "Übertragungen",
+        (Locale::French, "active") => "actifs",
+        (Locale::Spanish, "active") => "activas",
+        (Locale::German, "active") => "aktiv",
+        (Locale::French, "All settings") => "Tous les réglages",
+        (Locale::Spanish, "All settings") => "Todos los ajustes",
+        (Locale::German, "All settings") => "Alle Einstellungen",
+        (Locale::French, "Hide settings") => "Masquer les réglages",
+        (Locale::Spanish, "Hide settings") => "Ocultar ajustes",
+        (Locale::German, "Hide settings") => "Einstellungen ausblenden",
         (Locale::French, "Send to") => "Envoyer à",
         (Locale::Spanish, "Send to") => "Enviar a",
         (Locale::German, "Send to") => "Senden an",
@@ -337,8 +363,8 @@ fn tr(key: &'static str) -> &'static str {
 // The window is transparent; the glass panel floats inside it with this gap on every side,
 // which also leaves room for the soft shadow.
 const GAP: f32 = 14.0;
-const PANEL_RADIUS: f32 = 30.0;
-const CARD_RADIUS: f32 = 18.0;
+const PANEL_RADIUS: f32 = 36.0;
+const CARD_RADIUS: f32 = 24.0;
 
 // ---------------------------------------------------------------------------
 // Palette (macOS Tahoe "Liquid Glass" inspired, light and dark)
@@ -376,23 +402,24 @@ impl Pal {
             dark: true,
             m3: false,
             on_accent: Color32::WHITE,
-            panel: Color32::from_rgba_unmultiplied(30, 30, 34, 232),
-            panel_edge: Color32::from_white_alpha(40),
-            card: Color32::from_white_alpha(14),
-            card_edge: Color32::from_white_alpha(20),
-            field: Color32::from_black_alpha(70),
-            text: Color32::from_rgb(245, 245, 247),
-            text2: Color32::from_rgb(160, 160, 169),
-            text3: Color32::from_rgb(112, 112, 121),
-            accent: Color32::from_rgb(10, 132, 255),
+            // Tinted, see-through blue glass.
+            panel: Color32::from_rgba_unmultiplied(26, 48, 98, 176),
+            panel_edge: Color32::from_white_alpha(78),
+            card: Color32::from_white_alpha(30),
+            card_edge: Color32::from_white_alpha(58),
+            field: Color32::from_rgba_unmultiplied(8, 20, 56, 90),
+            text: Color32::from_rgb(248, 250, 255),
+            text2: Color32::from_rgb(196, 212, 238),
+            text3: Color32::from_rgb(146, 166, 202),
+            accent: Color32::from_rgb(52, 120, 246),
             good: Color32::from_rgb(48, 209, 88),
-            red: Color32::from_rgb(255, 69, 58),
-            orange: Color32::from_rgb(255, 159, 10),
-            purple: Color32::from_rgb(191, 90, 242),
-            sep: Color32::from_white_alpha(22),
-            fill: Color32::from_white_alpha(22),
-            fill_hover: Color32::from_white_alpha(36),
-            fill_press: Color32::from_white_alpha(50),
+            red: Color32::from_rgb(255, 99, 88),
+            orange: Color32::from_rgb(255, 169, 40),
+            purple: Color32::from_rgb(191, 110, 250),
+            sep: Color32::from_white_alpha(40),
+            fill: Color32::from_white_alpha(34),
+            fill_hover: Color32::from_white_alpha(52),
+            fill_press: Color32::from_white_alpha(70),
         }
     }
 
@@ -401,23 +428,23 @@ impl Pal {
             dark: false,
             m3: false,
             on_accent: Color32::WHITE,
-            panel: Color32::from_rgba_unmultiplied(246, 246, 249, 234),
-            panel_edge: Color32::from_black_alpha(26),
-            card: Color32::from_white_alpha(185),
-            card_edge: Color32::from_black_alpha(16),
-            field: Color32::from_white_alpha(210),
-            text: Color32::from_rgb(28, 28, 30),
-            text2: Color32::from_rgb(108, 108, 118),
-            text3: Color32::from_rgb(160, 160, 168),
-            accent: Color32::from_rgb(0, 122, 255),
+            panel: Color32::from_rgba_unmultiplied(226, 238, 255, 196),
+            panel_edge: Color32::from_white_alpha(210),
+            card: Color32::from_white_alpha(120),
+            card_edge: Color32::from_white_alpha(190),
+            field: Color32::from_white_alpha(190),
+            text: Color32::from_rgb(18, 32, 66),
+            text2: Color32::from_rgb(70, 90, 130),
+            text3: Color32::from_rgb(120, 138, 172),
+            accent: Color32::from_rgb(0, 112, 245),
             good: Color32::from_rgb(40, 205, 65),
             red: Color32::from_rgb(255, 59, 48),
             orange: Color32::from_rgb(255, 149, 0),
             purple: Color32::from_rgb(175, 82, 222),
-            sep: Color32::from_black_alpha(20),
-            fill: Color32::from_black_alpha(14),
-            fill_hover: Color32::from_black_alpha(24),
-            fill_press: Color32::from_black_alpha(36),
+            sep: Color32::from_rgba_unmultiplied(40, 70, 130, 36),
+            fill: Color32::from_white_alpha(120),
+            fill_hover: Color32::from_white_alpha(160),
+            fill_press: Color32::from_white_alpha(200),
         }
     }
 
@@ -941,7 +968,7 @@ fn glass_circle(ui: &mut egui::Ui, active: bool) -> (Rect, egui::Response) {
             .circle_filled(rect.center(), 18.0, on.gamma_multiply(layer));
         return (rect, resp.on_hover_cursor(egui::CursorIcon::PointingHand));
     }
-    let (rect, resp) = ui.allocate_exact_size(vec2(30.0, 30.0), egui::Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(34.0, 34.0), egui::Sense::click());
     let fill = if active {
         p.accent
     } else if resp.is_pointer_button_down_on() {
@@ -951,7 +978,9 @@ fn glass_circle(ui: &mut egui::Ui, active: bool) -> (Rect, egui::Response) {
     } else {
         p.fill
     };
-    ui.painter().circle_filled(rect.center(), 15.0, fill);
+    ui.painter().circle_filled(rect.center(), 17.0, fill);
+    ui.painter()
+        .circle_stroke(rect.center(), 16.5, Stroke::new(1.0_f32, p.card_edge));
     (rect, resp.on_hover_cursor(egui::CursorIcon::PointingHand))
 }
 
@@ -1052,27 +1081,34 @@ fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
 /// macOS-style switch.
 fn mac_switch(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     let p = pal();
-    let (rect, mut resp) = ui.allocate_exact_size(vec2(42.0, 25.0), egui::Sense::click());
+    let (rect, mut resp) = ui.allocate_exact_size(vec2(52.0, 30.0), egui::Sense::click());
     if resp.clicked() {
         *on = !*on;
         resp.mark_changed();
     }
     let t = ui.ctx().animate_bool_responsive(resp.id, *on);
+    // Off: a frosted glass track. On: the bright accent blue.
     let off_track = if p.dark {
-        Color32::from_rgb(78, 78, 84)
+        Color32::from_white_alpha(46)
     } else {
-        Color32::from_rgb(214, 214, 220)
+        Color32::from_rgba_unmultiplied(60, 90, 150, 56)
     };
-    let track = off_track.lerp_to_gamma(p.good, t);
-    let x = egui::lerp((rect.left() + 12.5)..=(rect.right() - 12.5), t);
+    let track = off_track.lerp_to_gamma(p.accent, t);
+    let x = egui::lerp((rect.left() + 15.0)..=(rect.right() - 15.0), t);
     let painter = ui.painter();
-    painter.rect_filled(rect, 12.5, track);
-    painter.circle_filled(
-        Pos2::new(x, rect.center().y + 1.0),
-        10.5,
-        Color32::from_black_alpha(46),
+    painter.rect_filled(rect, 15.0, track);
+    painter.rect_stroke(
+        rect.shrink(0.5),
+        14.5,
+        Stroke::new(1.0_f32, Color32::from_white_alpha(if p.dark { 60 } else { 150 })),
     );
-    painter.circle_filled(Pos2::new(x, rect.center().y), 10.5, Color32::WHITE);
+    // Soft shadow, then the glossy white thumb.
+    painter.circle_filled(
+        Pos2::new(x, rect.center().y + 1.5),
+        12.5,
+        Color32::from_black_alpha(52),
+    );
+    painter.circle_filled(Pos2::new(x, rect.center().y), 12.5, Color32::WHITE);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -1185,16 +1221,19 @@ fn capsule(
     if p.m3 {
         return m3_button(ui, label, look, height, width, enabled);
     }
+    let selected_chip = matches!(look, Look::Chip(true));
     let look = match look {
         Look::Chip(true) => Look::Primary,
         Look::Chip(false) => Look::Glass,
         other => other,
     };
-    let font = sb_font(if height >= 34.0 { 14.0 } else { 12.0 });
+    let font = sb_font(if height >= 34.0 { 14.0 } else { 12.5 });
     let galley = ui
         .painter()
         .layout_no_wrap(label.to_owned(), font.clone(), Color32::WHITE);
-    let w = width.unwrap_or(galley.size().x + height * 0.95);
+    // A selected chip shows a check mark in front of its label, like the mockup.
+    let check_w = if selected_chip { 20.0 } else { 0.0 };
+    let w = width.unwrap_or(galley.size().x + height * 0.95 + check_w);
     let sense = if enabled {
         egui::Sense::click()
     } else {
@@ -1239,9 +1278,56 @@ fn capsule(
     } else {
         (fill.gamma_multiply(0.45), fg.gamma_multiply(0.55))
     };
-    ui.painter().rect_filled(rect, rect.height() / 2.0, fill);
-    ui.painter()
-        .text(rect.center(), Align2::CENTER_CENTER, label, font, fg);
+    let radius = rect.height() / 2.0;
+    ui.painter().rect_filled(rect, radius, fill);
+    match look {
+        Look::Primary => {
+            // Light catching the top half of the blue pill.
+            let sheen = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.center().y));
+            ui.painter().rect_filled(
+                sheen,
+                Rounding {
+                    nw: radius,
+                    ne: radius,
+                    sw: 0.0,
+                    se: 0.0,
+                },
+                Color32::from_white_alpha(if enabled { 26 } else { 10 }),
+            );
+            ui.painter().rect_stroke(
+                rect.shrink(0.5),
+                radius,
+                Stroke::new(1.0_f32, Color32::from_white_alpha(70)),
+            );
+        }
+        Look::Glass => {
+            ui.painter().rect_stroke(
+                rect.shrink(0.5),
+                radius,
+                Stroke::new(1.0_f32, p.card_edge),
+            );
+        }
+        _ => {}
+    }
+    if selected_chip {
+        let cx = rect.center().x - galley.size().x / 2.0 - check_w / 2.0 + 7.0;
+        let c = Pos2::new(cx, rect.center().y);
+        let s = Stroke::new(2.0_f32, fg);
+        ui.painter()
+            .line_segment([c + vec2(-5.0, 0.5), c + vec2(-1.5, 4.0)], s);
+        ui.painter()
+            .line_segment([c + vec2(-1.5, 4.0), c + vec2(5.0, -3.5)], s);
+        ui.painter().text(
+            Pos2::new(cx + 12.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            label,
+            font,
+            fg,
+        );
+    } else {
+        ui.painter()
+            .text(rect.center(), Align2::CENTER_CENTER, label, font, fg);
+    }
     if enabled {
         resp.on_hover_cursor(egui::CursorIcon::PointingHand)
     } else {
@@ -1292,8 +1378,300 @@ fn arrow_tray(painter: &egui::Painter, c: Pos2, color: Color32) {
     painter.line_segment([c + vec2(-8.0, 9.0), c + vec2(8.0, 9.0)], s);
 }
 
+// ---- Glyphs for the macOS glass layout ------------------------------------------------------
+
+type Glyph = fn(&egui::Painter, Pos2, Color32);
+
+fn glyph_share(painter: &egui::Painter, c: Pos2, col: Color32) {
+    let s = Stroke::new(1.9_f32, col);
+    // Open box.
+    painter.add(egui::Shape::line(
+        vec![
+            c + vec2(0.5, -8.0),
+            c + vec2(-5.0, -8.0),
+            c + vec2(-8.0, -5.0),
+            c + vec2(-8.0, 5.0),
+            c + vec2(-5.0, 8.0),
+            c + vec2(5.0, 8.0),
+            c + vec2(8.0, 5.0),
+            c + vec2(8.0, 1.0),
+        ],
+        s,
+    ));
+    // Arrow leaving the box at the top right.
+    painter.line_segment([c + vec2(-2.0, 2.0), c + vec2(8.0, -8.0)], s);
+    painter.line_segment([c + vec2(3.0, -8.0), c + vec2(8.0, -8.0)], s);
+    painter.line_segment([c + vec2(8.0, -8.0), c + vec2(8.0, -3.0)], s);
+}
+
+fn glyph_copy(painter: &egui::Painter, c: Pos2, col: Color32) {
+    let s = Stroke::new(1.9_f32, col);
+    // The part of the back sheet that peeks out from behind the front one.
+    painter.add(egui::Shape::line(
+        vec![
+            c + vec2(3.5, -3.5),
+            c + vec2(3.5, -8.5),
+            c + vec2(-8.5, -8.5),
+            c + vec2(-8.5, 3.5),
+            c + vec2(-3.5, 3.5),
+        ],
+        s,
+    ));
+    painter.rect_stroke(
+        Rect::from_center_size(c + vec2(2.5, 2.5), vec2(12.0, 12.0)),
+        3.0,
+        s,
+    );
+}
+
+fn glyph_monitor(painter: &egui::Painter, c: Pos2, col: Color32) {
+    let s = Stroke::new(1.9_f32, col);
+    painter.rect_stroke(
+        Rect::from_center_size(c + vec2(0.0, -1.5), vec2(20.0, 13.0)),
+        3.0,
+        s,
+    );
+    painter.line_segment([c + vec2(-5.0, 8.5), c + vec2(5.0, 8.5)], s);
+}
+
+fn glyph_gear(painter: &egui::Painter, c: Pos2, col: Color32) {
+    let s = Stroke::new(1.9_f32, col);
+    let teeth = Stroke::new(3.0_f32, col);
+    for i in 0..8 {
+        let a = (i as f32 * 45.0).to_radians();
+        let d = vec2(a.cos(), a.sin());
+        painter.line_segment([c + d * 7.5, c + d * 10.0], teeth);
+    }
+    painter.circle_stroke(c, 7.0, s);
+    painter.circle_stroke(c, 3.0, s);
+}
+
+fn glyph_pause(painter: &egui::Painter, c: Pos2, col: Color32) {
+    let s = Stroke::new(1.9_f32, col);
+    painter.rect_stroke(Rect::from_center_size(c + vec2(-5.5, 0.0), vec2(5.5, 17.0)), 2.5, s);
+    painter.rect_stroke(Rect::from_center_size(c + vec2(5.5, 0.0), vec2(5.5, 17.0)), 2.5, s);
+}
+
+fn glyph_pin(painter: &egui::Painter, c: Pos2, col: Color32) {
+    let s = Stroke::new(1.9_f32, col);
+    painter.rect_stroke(Rect::from_center_size(c + vec2(0.0, -4.5), vec2(7.0, 10.0)), 2.5, s);
+    painter.line_segment([c + vec2(-6.0, 1.0), c + vec2(6.0, 1.0)], s);
+    painter.line_segment([c + vec2(0.0, 1.0), c + vec2(0.0, 9.0)], s);
+}
+
+/// Dark, see-through disc that holds a glyph (the round icon wells in the mockup).
+fn badge_color() -> Color32 {
+    if pal().dark {
+        Color32::from_rgba_unmultiplied(8, 22, 62, 140)
+    } else {
+        Color32::from_rgba_unmultiplied(40, 80, 150, 80)
+    }
+}
+
+/// Large glass pill with an icon well on the left and a two-line label, used for the drop
+/// target and the Clipboard / Devices tiles. `highlight` (0..=1) tints it with the accent.
+fn glass_tile(
+    ui: &mut egui::Ui,
+    width: f32,
+    height: f32,
+    glyph: Glyph,
+    title: &str,
+    subtitle: &str,
+    highlight: f32,
+    interactive: bool,
+) -> egui::Response {
+    let p = pal();
+    let sense = if interactive {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, height), sense);
+    let base = if interactive && resp.is_pointer_button_down_on() {
+        p.fill_press
+    } else if interactive && resp.hovered() {
+        p.fill_hover
+    } else {
+        p.card
+    };
+    let fill = base.lerp_to_gamma(p.accent.gamma_multiply(0.55), highlight);
+    let edge = p.card_edge.lerp_to_gamma(p.accent, highlight);
+    let radius = height / 2.0;
+    let painter = ui.painter().with_clip_rect(rect);
+    painter.rect_filled(rect, radius, fill);
+    // Light catching the top half of the glass.
+    painter.rect_filled(
+        Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.center().y)),
+        Rounding {
+            nw: radius,
+            ne: radius,
+            sw: 0.0,
+            se: 0.0,
+        },
+        Color32::from_white_alpha(if p.dark { 10 } else { 40 }),
+    );
+    painter.rect_stroke(rect.shrink(0.5), radius, Stroke::new(1.0_f32, edge));
+
+    let disc = height * 0.62;
+    let c = Pos2::new(rect.left() + (height - disc) / 2.0 + disc / 2.0, rect.center().y);
+    painter.circle_filled(c, disc / 2.0, badge_color());
+    glyph(&painter, c, p.text);
+
+    let tx = c.x + disc / 2.0 + 12.0;
+    painter.text(
+        Pos2::new(tx, rect.center().y - 9.0),
+        Align2::LEFT_CENTER,
+        title,
+        sb_font(if width > 260.0 { 17.0 } else { 14.5 }),
+        p.text,
+    );
+    painter.text(
+        Pos2::new(tx, rect.center().y + 10.0),
+        Align2::LEFT_CENTER,
+        subtitle,
+        FontId::proportional(if width > 260.0 { 13.0 } else { 12.0 }),
+        p.text2,
+    );
+    if interactive {
+        resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    } else {
+        resp
+    }
+}
+
+/// Big round quick-action button: a glass ring around a darker well with a glyph in it.
+fn quick_circle(ui: &mut egui::Ui, size: f32, glyph: Glyph, active: bool) -> egui::Response {
+    let p = pal();
+    let (rect, resp) = ui.allocate_exact_size(vec2(size, size), egui::Sense::click());
+    let outer = if resp.is_pointer_button_down_on() {
+        p.fill_press
+    } else if resp.hovered() {
+        p.fill_hover
+    } else {
+        p.card
+    };
+    let c = rect.center();
+    let painter = ui.painter();
+    painter.circle_filled(c, size / 2.0, outer);
+    painter.circle_stroke(c, size / 2.0 - 0.5, Stroke::new(1.0_f32, p.card_edge));
+    let well = size * 0.31;
+    painter.circle_filled(c, well, if active { p.accent } else { badge_color() });
+    glyph(painter, c, if active { p.on_accent } else { p.text });
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Rows for the active (or failed) transfers, with progress and a cancel button.
+fn transfer_cards(ui: &mut egui::Ui, transfers: &[TransferStatus], actions: &mut Vec<Action>) {
+    let p = pal();
+    for transfer in transfers
+        .iter()
+        .rev()
+        .filter(|t| !t.finished || t.error.is_some())
+        .take(3)
+    {
+        let elapsed = transfer.started.elapsed().as_secs_f64().max(0.001);
+        let speed = transfer.done as f64 / elapsed;
+        let remaining = transfer.total.saturating_sub(transfer.done) as f64;
+        let fraction = if transfer.total == 0 {
+            1.0
+        } else {
+            transfer.done as f32 / transfer.total as f32
+        };
+        let verb = match transfer.direction {
+            TransferDirection::Upload => "Uploading",
+            TransferDirection::Download => "Downloading",
+        };
+        card(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "{verb} {} · {}",
+                        shorten(&transfer.name, 24),
+                        shorten(&transfer.peer, 18)
+                    ))
+                    .size(11.5)
+                    .color(p.text),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(
+                        RichText::new(format!("{}%", (fraction * 100.0) as u8))
+                            .size(11.5)
+                            .color(p.text2),
+                    );
+                });
+            });
+            if let Some(error) = &transfer.error {
+                ui.label(
+                    RichText::new(format!("Failed: {}", shorten(error, 52)))
+                        .size(11.5)
+                        .color(p.red),
+                );
+            } else {
+                ui.label(
+                    RichText::new(format!(
+                        "{} · {}",
+                        transfer_rate(speed),
+                        transfer_eta(remaining / speed)
+                    ))
+                    .size(11.5)
+                    .color(p.text2),
+                );
+            }
+            thin_progress(ui, fraction);
+            if !transfer.finished
+                && capsule(ui, tr("Cancel"), Look::Tint(p.red), 24.0, None, true).clicked()
+            {
+                actions.push(Action::CancelTransfer {
+                    direction: transfer.direction,
+                    name: transfer.name.clone(),
+                    peer: transfer.peer.clone(),
+                });
+            }
+        });
+    }
+}
+
+/// "Transfers · N active" card with an overall progress track (macOS glass layout).
+fn transfers_summary(ui: &mut egui::Ui, transfers: &[TransferStatus]) {
+    let active: Vec<&TransferStatus> = transfers
+        .iter()
+        .filter(|t| !t.finished && t.error.is_none())
+        .collect();
+    let (done, total) = active
+        .iter()
+        .fold((0u64, 0u64), |(d, t), x| (d + x.done, t + x.total));
+    let frac = if total == 0 { 0.0 } else { done as f32 / total as f32 };
+    card(ui, |ui| {
+        ui.label(semibold(format!("{} · {} {}", tr("Transfers"), active.len(), tr("active")), 15.0).color(pal().text));
+        ui.add_space(2.0);
+        thin_progress(ui, frac);
+    });
+}
+
+/// The macOS drop target: a wide glass pill that lights up while files hover over it.
+fn mac_drop_zone(ui: &mut egui::Ui, hovering: bool) {
+    let t = ui
+        .ctx()
+        .animate_bool_responsive(egui::Id::new("drop_zone_hover"), hovering);
+    let title = if hovering { "Release to send" } else { tr("Drop files") };
+    glass_tile(
+        ui,
+        ui.available_width(),
+        84.0,
+        glyph_share,
+        title,
+        tr("Drag here to send"),
+        t,
+        false,
+    );
+}
+
 fn drop_zone(ui: &mut egui::Ui, hovering: bool) {
     let p = pal();
+    if !p.m3 {
+        mac_drop_zone(ui, hovering);
+        return;
+    }
     let t = ui
         .ctx()
         .animate_bool_responsive(egui::Id::new("drop_zone_hover"), hovering);
@@ -1713,6 +2091,10 @@ struct ShelfApp {
     monitor: usize,
     material: bool,
     saved_settings: Settings,
+    /// macOS glass layout: show rooms, devices, activity and the advanced settings.
+    show_all_settings: bool,
+    /// Set when the Devices tile is clicked so the Devices section opens.
+    devices_focus: bool,
 
     monitors: Vec<monitors::Monitor>,
     monitors_checked: Instant,
@@ -1842,6 +2224,8 @@ impl ShelfApp {
             monitor: settings.monitor,
             material: settings.material,
             saved_settings: settings,
+            show_all_settings: false,
+            devices_focus: false,
             monitors: monitors::list(),
             monitors_checked: now,
             _tray: tray,
@@ -2502,107 +2886,119 @@ impl eframe::App for ShelfApp {
                         ui.vertical(|ui| {
                             ui.spacing_mut().item_spacing.y = 0.0;
                             if !self.device_name.is_empty() {
-                                ui.label(
-                                    RichText::new(shorten(&self.device_name, 26))
-                                        .size(12.0)
-                                        .color(p.text2),
-                                );
+                                if p.m3 {
+                                    ui.label(
+                                        RichText::new(shorten(&self.device_name, 26))
+                                            .size(12.0)
+                                            .color(p.text2),
+                                    );
+                                } else {
+                                    ui.label(
+                                        semibold(shorten(&self.device_name, 22), 16.0)
+                                            .color(p.text),
+                                    );
+                                }
                             }
                         });
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if close_button(ui).clicked() {
                                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                             }
-                            pin_button(ui, &mut self.pinned);
+                            // On the glass layout the pin lives in the quick-action row.
+                            if p.m3 {
+                                pin_button(ui, &mut self.pinned);
+                            }
                         });
                     });
 
                     if !self.status.is_empty() {
                         status_pill(ui, &self.status);
                     }
-                    for transfer in self
-                        .transfers
-                        .iter()
-                        .rev()
-                        .filter(|t| !t.finished || t.error.is_some())
-                        .take(3)
-                    {
-                        let elapsed = transfer.started.elapsed().as_secs_f64().max(0.001);
-                        let speed = transfer.done as f64 / elapsed;
-                        let remaining = transfer.total.saturating_sub(transfer.done) as f64;
-                        let fraction = if transfer.total == 0 {
-                            1.0
-                        } else {
-                            transfer.done as f32 / transfer.total as f32
-                        };
-                        let verb = match transfer.direction {
-                            TransferDirection::Upload => "Uploading",
-                            TransferDirection::Download => "Downloading",
-                        };
-                        card(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new(format!(
-                                        "{verb} {} · {}",
-                                        shorten(&transfer.name, 24),
-                                        shorten(&transfer.peer, 18)
-                                    ))
-                                    .size(11.5)
-                                    .color(p.text),
-                                );
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    ui.label(
-                                        RichText::new(format!("{}%", (fraction * 100.0) as u8))
-                                            .size(11.5)
-                                            .color(p.text2),
-                                    );
-                                });
-                            });
-                            if let Some(error) = &transfer.error {
-                                ui.label(
-                                    RichText::new(format!("Failed: {}", shorten(error, 52)))
-                                        .size(11.5)
-                                        .color(p.red),
-                                );
-                            } else {
-                                ui.label(
-                                    RichText::new(format!(
-                                        "{} · {}",
-                                        transfer_rate(speed),
-                                        transfer_eta(remaining / speed)
-                                    ))
-                                    .size(11.5)
-                                    .color(p.text2),
-                                );
-                            }
-                            thin_progress(ui, fraction);
-                            if !transfer.finished
-                                && capsule(ui, tr("Cancel"), Look::Tint(p.red), 24.0, None, true)
-                                    .clicked()
+                    if p.m3 {
+                        transfer_cards(ui, &self.transfers, &mut actions);
+                        // Drop zone and clipboard.
+                        drop_zone(ui, hovering_files);
+                        if capsule(
+                            ui,
+                            tr("Send Clipboard"),
+                            Look::Primary,
+                            38.0,
+                            Some(ui.available_width()),
+                            true,
+                        )
+                        .clicked()
+                        {
+                            actions.push(Action::SendClipboard);
+                        }
+                    } else {
+                        // macOS glass home: drop pill, Clipboard / Devices tiles, transfers,
+                        // round quick actions and the All settings switch.
+                        drop_zone(ui, hovering_files);
+                        let tile_gap = 8.0;
+                        let tile_w = ((ui.available_width() - tile_gap) / 2.0).floor();
+                        let online = paired.iter().filter(|d| d.addr.is_some()).count();
+                        let online_label = format!("{online} {}", tr("online"));
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = tile_gap;
+                            if glass_tile(ui, tile_w, 80.0, glyph_copy, tr("Clipboard"), tr("Send"), 0.0, true)
+                                .clicked()
                             {
-                                actions.push(Action::CancelTransfer {
-                                    direction: transfer.direction,
-                                    name: transfer.name.clone(),
-                                    peer: transfer.peer.clone(),
-                                });
+                                actions.push(Action::SendClipboard);
+                            }
+                            if glass_tile(ui, tile_w, 80.0, glyph_monitor, tr("Devices"), &online_label, 0.0, true)
+                                .clicked()
+                            {
+                                self.show_all_settings = true;
+                                self.devices_focus = true;
                             }
                         });
-                    }
+                        transfers_summary(ui, &self.transfers);
+                        transfer_cards(ui, &self.transfers, &mut actions);
 
-                    // Drop zone and clipboard.
-                    drop_zone(ui, hovering_files);
-                    if capsule(
-                        ui,
-                        tr("Send Clipboard"),
-                        Look::Primary,
-                        38.0,
-                        Some(ui.available_width()),
-                        true,
-                    )
-                    .clicked()
-                    {
-                        actions.push(Action::SendClipboard);
+                        let circle = ((ui.available_width() - 30.0) / 4.0).floor().clamp(52.0, 76.0);
+                        let circle_gap = ((ui.available_width() - circle * 4.0) / 3.0).max(6.0);
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = circle_gap;
+                            if quick_circle(ui, circle, glyph_gear, self.show_all_settings)
+                                .on_hover_text(tr("All settings"))
+                                .clicked()
+                            {
+                                self.show_all_settings = !self.show_all_settings;
+                            }
+                            if quick_circle(ui, circle, glyph_copy, false)
+                                .on_hover_text(tr("Send Clipboard"))
+                                .clicked()
+                            {
+                                actions.push(Action::SendClipboard);
+                            }
+                            if quick_circle(ui, circle, glyph_pause, self.receiving_paused)
+                                .on_hover_text("Pause receiving")
+                                .clicked()
+                            {
+                                self.receiving_paused = !self.receiving_paused;
+                                self.handle
+                                    .send(Command::SetReceivingPaused(self.receiving_paused));
+                            }
+                            if quick_circle(ui, circle, glyph_pin, self.pinned)
+                                .on_hover_text(if self.pinned { "Pinned open" } else { "Keep open" })
+                                .clicked()
+                            {
+                                self.pinned = !self.pinned;
+                            }
+                        });
+                        let settings_label = if self.show_all_settings {
+                            tr("Hide settings")
+                        } else {
+                            tr("All settings")
+                        };
+                        if capsule(ui, settings_label, Look::Glass, 36.0, None, true).clicked() {
+                            self.show_all_settings = !self.show_all_settings;
+                        }
                     }
+                    let show_more = p.m3
+                        || self.show_all_settings
+                        || self.my_code.is_some()
+                        || self.pair_dialog.is_some();
 
                     // Settings.
                     card(ui, |ui| {
@@ -2675,6 +3071,7 @@ impl eframe::App for ShelfApp {
                             .size(10.5)
                             .color(p.text2),
                         );
+                        if show_more {
                         hairline(ui);
                         ui.label(RichText::new("Device groups").size(13.5).color(p.text));
                         ui.horizontal_wrapped(|ui| {
@@ -2722,8 +3119,10 @@ impl eframe::App for ShelfApp {
                                 }
                             }
                         });
+                        }
                     });
 
+                    if show_more {
                     // Collaboration rooms.
                     egui::CollapsingHeader::new(semibold(tr("Rooms"), 12.5).color(p.text2))
                         .default_open(true)
@@ -3383,6 +3782,7 @@ impl eframe::App for ShelfApp {
                         .default_open(
                             paired.is_empty() || self.my_code.is_some() || self.pair_dialog.is_some(),
                         )
+                        .open(if self.devices_focus { Some(true) } else { None })
                         .show(ui, |ui| {
                             if paired.is_empty() && nearby.is_empty() {
                                 ui.label(
@@ -3609,6 +4009,9 @@ impl eframe::App for ShelfApp {
                                 });
                             }
                         });
+
+                    }
+                    self.devices_focus = false;
 
                     // The shelf itself.
                     ui.horizontal(|ui| {
