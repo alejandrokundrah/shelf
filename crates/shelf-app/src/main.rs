@@ -1424,14 +1424,30 @@ fn glyph_copy(painter: &egui::Painter, c: Pos2, col: Color32) {
     );
 }
 
-fn glyph_monitor(painter: &egui::Painter, c: Pos2, col: Color32) {
+/// Lucide "airplay": a screen with an open bottom and a triangle beneath it.
+fn glyph_airplay(painter: &egui::Painter, c: Pos2, col: Color32) {
+    let k = 0.92_f32;
     let s = Stroke::new(1.9_f32, col);
-    painter.rect_stroke(
-        Rect::from_center_size(c + vec2(0.0, -1.5), vec2(20.0, 13.0)),
-        3.0,
+    let pt = |x: f32, y: f32| c + vec2(x - 12.0, y - 12.0) * k;
+    let mut pts = vec![pt(5.0, 17.0), pt(4.0, 17.0)];
+    // Four rounded corners of radius 2, walked clockwise from the bottom left.
+    for (cx, cy, a0) in [
+        (4.0_f32, 15.0_f32, 90.0_f32),
+        (4.0, 5.0, 180.0),
+        (20.0, 5.0, 270.0),
+        (20.0, 15.0, 0.0),
+    ] {
+        for i in 0..=6 {
+            let a = (a0 + 90.0 * i as f32 / 6.0).to_radians();
+            pts.push(pt(cx + 2.0 * a.cos(), cy + 2.0 * a.sin()));
+        }
+    }
+    pts.push(pt(19.0, 17.0));
+    painter.add(egui::Shape::line(pts, s));
+    painter.add(egui::Shape::closed_line(
+        vec![pt(12.0, 15.0), pt(17.0, 21.0), pt(7.0, 21.0)],
         s,
-    );
-    painter.line_segment([c + vec2(-5.0, 8.5), c + vec2(5.0, 8.5)], s);
+    ));
 }
 
 fn glyph_gear(painter: &egui::Painter, c: Pos2, col: Color32) {
@@ -2945,7 +2961,7 @@ impl eframe::App for ShelfApp {
                             {
                                 actions.push(Action::SendClipboard);
                             }
-                            if glass_tile(ui, tile_w, 80.0, glyph_monitor, tr("Devices"), &online_label, 0.0, true)
+                            if glass_tile(ui, tile_w, 80.0, glyph_airplay, tr("Devices"), &online_label, 0.0, true)
                                 .clicked()
                             {
                                 self.show_all_settings = true;
