@@ -2972,6 +2972,7 @@ impl eframe::App for ShelfApp {
                 egui::ScrollArea::vertical()
                     .id_salt("shelf-content-scroll")
                     .auto_shrink([false, false])
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .max_width(inner.width())
                     .show(ui, |ui| {
                     ui.set_width(inner.width().max(1.0));
