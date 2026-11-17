@@ -394,6 +394,10 @@ struct Pal {
     fill: Color32,
     fill_hover: Color32,
     fill_press: Color32,
+    /// Round icon wells (the dark disc behind a glyph).
+    well: Color32,
+    /// Tonal highlight: selected chips, active quick actions, the drop well.
+    tonal: Color32,
 }
 
 impl Pal {
@@ -420,6 +424,8 @@ impl Pal {
             fill: Color32::from_white_alpha(34),
             fill_hover: Color32::from_white_alpha(52),
             fill_press: Color32::from_white_alpha(70),
+            well: Color32::from_rgba_unmultiplied(8, 22, 62, 140),
+            tonal: Color32::from_rgb(52, 120, 246),
         }
     }
 
@@ -445,65 +451,71 @@ impl Pal {
             fill: Color32::from_white_alpha(120),
             fill_hover: Color32::from_white_alpha(160),
             fill_press: Color32::from_white_alpha(200),
+            well: Color32::from_rgba_unmultiplied(40, 80, 150, 80),
+            tonal: Color32::from_rgb(0, 112, 245),
         }
     }
 
-    /// Material 3 colour roles (blue seed), dark scheme.
+    /// Material 3 with a soft sage-green seed, dark scheme.
     fn m3_dark() -> Self {
         Self {
             dark: true,
             m3: true,
-            on_accent: Color32::from_rgb(0, 50, 88),
-            panel: Color32::from_rgb(29, 32, 36), // surface container
+            on_accent: Color32::from_rgb(0, 56, 34),
+            panel: Color32::from_rgb(30, 34, 32),
             panel_edge: Color32::TRANSPARENT,
-            card: Color32::from_rgb(39, 42, 47), // surface container high
+            card: Color32::from_rgb(40, 45, 42),
             card_edge: Color32::TRANSPARENT,
-            field: Color32::from_rgb(50, 53, 58), // surface container highest
-            text: Color32::from_rgb(226, 226, 230), // on surface
-            text2: Color32::from_rgb(195, 199, 207), // on surface variant
-            text3: Color32::from_rgb(141, 145, 153), // outline
-            accent: Color32::from_rgb(159, 202, 255), // primary
-            good: Color32::from_rgb(109, 213, 140),
-            red: Color32::from_rgb(255, 180, 171), // error
+            field: Color32::from_rgb(50, 56, 52),
+            text: Color32::from_rgb(228, 233, 230),
+            text2: Color32::from_rgb(170, 178, 173),
+            text3: Color32::from_rgb(125, 133, 128),
+            accent: Color32::from_rgb(146, 208, 170),
+            good: Color32::from_rgb(146, 208, 170),
+            red: Color32::from_rgb(255, 180, 171),
             orange: Color32::from_rgb(255, 183, 77),
             purple: Color32::from_rgb(214, 186, 255),
-            sep: Color32::from_rgb(67, 71, 78),  // outline variant
-            fill: Color32::from_rgb(59, 72, 88), // secondary container
-            fill_hover: Color32::from_rgb(72, 84, 101), // + 8% state layer
-            fill_press: Color32::from_rgb(78, 91, 107), // + 12% state layer
+            sep: Color32::from_rgb(60, 67, 63),
+            fill: Color32::from_rgb(48, 54, 51),
+            fill_hover: Color32::from_rgb(58, 65, 61),
+            fill_press: Color32::from_rgb(66, 73, 69),
+            well: Color32::from_rgb(28, 32, 30),
+            tonal: Color32::from_rgb(52, 84, 66),
         }
     }
 
-    /// Material 3 colour roles (blue seed), light scheme.
+    /// Material 3 with a soft sage-green seed, light scheme.
     fn m3_light() -> Self {
         Self {
             dark: false,
             m3: true,
             on_accent: Color32::WHITE,
-            panel: Color32::from_rgb(237, 237, 241),
+            panel: Color32::from_rgb(232, 236, 233),
             panel_edge: Color32::TRANSPARENT,
-            card: Color32::from_rgb(226, 226, 230),
+            card: Color32::from_rgb(241, 244, 242),
             card_edge: Color32::TRANSPARENT,
-            field: Color32::from_rgb(226, 226, 230),
-            text: Color32::from_rgb(26, 28, 30),
-            text2: Color32::from_rgb(67, 71, 78),
-            text3: Color32::from_rgb(115, 119, 127),
-            accent: Color32::from_rgb(0, 97, 164),
-            good: Color32::from_rgb(27, 109, 47),
+            field: Color32::from_rgb(226, 230, 227),
+            text: Color32::from_rgb(24, 28, 26),
+            text2: Color32::from_rgb(92, 100, 96),
+            text3: Color32::from_rgb(135, 142, 138),
+            accent: Color32::from_rgb(58, 108, 82),
+            good: Color32::from_rgb(58, 108, 82),
             red: Color32::from_rgb(186, 26, 26),
             orange: Color32::from_rgb(180, 95, 0),
             purple: Color32::from_rgb(110, 57, 200),
-            sep: Color32::from_rgb(195, 199, 207),
-            fill: Color32::from_rgb(215, 227, 248),
-            fill_hover: Color32::from_rgb(199, 211, 232),
-            fill_press: Color32::from_rgb(191, 203, 223),
+            sep: Color32::from_rgb(206, 211, 208),
+            fill: Color32::from_rgb(225, 229, 226),
+            fill_hover: Color32::from_rgb(216, 221, 218),
+            fill_press: Color32::from_rgb(206, 212, 208),
+            well: Color32::from_rgb(224, 229, 226),
+            tonal: Color32::from_rgb(200, 226, 209),
         }
     }
 }
 
 fn panel_radius() -> f32 {
     if pal().m3 {
-        28.0
+        40.0
     } else {
         PANEL_RADIUS
     }
@@ -511,7 +523,7 @@ fn panel_radius() -> f32 {
 
 fn card_radius() -> f32 {
     if pal().m3 {
-        16.0
+        28.0
     } else {
         CARD_RADIUS
     }
@@ -900,11 +912,22 @@ fn detect_dark(ctx: &egui::Context) -> bool {
 /// A rounded "grouped" container, like the inset lists in macOS System Settings.
 fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let p = pal();
+    let shadow = if p.m3 {
+        egui::Shadow {
+            offset: vec2(0.0, 3.0),
+            blur: 10.0,
+            spread: 0.0,
+            color: Color32::from_black_alpha(if p.dark { 70 } else { 20 }),
+        }
+    } else {
+        egui::Shadow::NONE
+    };
     egui::Frame::none()
         .fill(p.card)
         .stroke(Stroke::new(1.0_f32, p.card_edge))
         .rounding(card_radius())
-        .inner_margin(egui::Margin::symmetric(14.0, 12.0))
+        .shadow(shadow)
+        .inner_margin(egui::Margin::symmetric(if p.m3 { 18.0 } else { 14.0 }, if p.m3 { 16.0 } else { 12.0 }))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 8.0;
@@ -945,27 +968,43 @@ fn status_pill(ui: &mut egui::Ui, text: &str) {
         });
 }
 
+/// Soft "raised surface" underlay for Material 3: a light glow up-left and a layered shadow
+/// below. Draw it first, then fill the shape on top.
+fn raised(painter: &egui::Painter, rect: Rect, radius: f32) {
+    let p = pal();
+    if !p.dark {
+        painter.rect_filled(
+            rect.expand(1.0).translate(vec2(-1.5, -1.5)),
+            radius + 1.0,
+            Color32::from_white_alpha(150),
+        );
+    }
+    let a: u8 = if p.dark { 60 } else { 24 };
+    for (dy, grow, alpha) in [(5.0_f32, 3.0_f32, a / 3), (3.0, 1.5, a / 2), (1.5, 0.0, a)] {
+        painter.rect_filled(
+            rect.expand(grow).translate(vec2(0.0, dy)),
+            radius + grow,
+            Color32::from_black_alpha(alpha),
+        );
+    }
+}
+
 /// Round glass button used in the header. Returns the rect so the caller can paint a glyph.
 fn glass_circle(ui: &mut egui::Ui, active: bool) -> (Rect, egui::Response) {
     let p = pal();
     if p.m3 {
-        let (rect, resp) = ui.allocate_exact_size(vec2(36.0, 36.0), egui::Sense::click());
-        let base = if active {
-            p.accent
-        } else {
-            Color32::TRANSPARENT
-        };
-        let layer = if resp.is_pointer_button_down_on() {
-            0.12
+        let (rect, resp) = ui.allocate_exact_size(vec2(40.0, 40.0), egui::Sense::click());
+        let fill = if active {
+            p.tonal
+        } else if resp.is_pointer_button_down_on() {
+            p.fill_press
         } else if resp.hovered() {
-            0.08
+            p.fill_hover
         } else {
-            0.0
+            p.card
         };
-        let on = if active { p.on_accent } else { p.text2 };
-        ui.painter().circle_filled(rect.center(), 18.0, base);
-        ui.painter()
-            .circle_filled(rect.center(), 18.0, on.gamma_multiply(layer));
+        raised(ui.painter(), rect, 20.0);
+        ui.painter().circle_filled(rect.center(), 20.0, fill);
         return (rect, resp.on_hover_cursor(egui::CursorIcon::PointingHand));
     }
     let (rect, resp) = ui.allocate_exact_size(vec2(34.0, 34.0), egui::Sense::click());
@@ -987,7 +1026,7 @@ fn glass_circle(ui: &mut egui::Ui, active: bool) -> (Rect, egui::Response) {
 fn close_button(ui: &mut egui::Ui) -> egui::Response {
     let (rect, resp) = glass_circle(ui, false);
     let c = rect.center();
-    let col = if resp.hovered() {
+    let col = if resp.hovered() || pal().m3 {
         pal().text
     } else {
         pal().text2
@@ -1000,6 +1039,7 @@ fn close_button(ui: &mut egui::Ui) -> egui::Response {
     resp.on_hover_text("Quit Shelf")
 }
 
+#[allow(dead_code)]
 fn pin_button(ui: &mut egui::Ui, pinned: &mut bool) -> egui::Response {
     let (rect, resp) = glass_circle(ui, *pinned);
     if resp.clicked() {
@@ -1023,6 +1063,7 @@ fn pin_button(ui: &mut egui::Ui, pinned: &mut bool) -> egui::Response {
     resp.on_hover_text(if *pinned { "Pinned open" } else { "Keep open" })
 }
 
+#[allow(dead_code)]
 /// Material 3 switch: 52x32 track, thumb grows and shows a check when on.
 fn m3_switch(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     let p = pal();
@@ -1066,15 +1107,13 @@ fn m3_switch(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+#[allow(dead_code)]
 fn on_state(t: f32) -> bool {
     t > 0.5
 }
 
 /// Switch in the current style (macOS or Material 3).
 fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
-    if pal().m3 {
-        return m3_switch(ui, on);
-    }
     mac_switch(ui, on)
 }
 
@@ -1088,7 +1127,13 @@ fn mac_switch(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     }
     let t = ui.ctx().animate_bool_responsive(resp.id, *on);
     // Off: a frosted glass track. On: the bright accent blue.
-    let off_track = if p.dark {
+    let off_track = if p.m3 {
+        if p.dark {
+            Color32::from_rgb(78, 85, 81)
+        } else {
+            Color32::from_rgb(201, 206, 203)
+        }
+    } else if p.dark {
         Color32::from_white_alpha(46)
     } else {
         Color32::from_rgba_unmultiplied(60, 90, 150, 56)
@@ -1097,11 +1142,13 @@ fn mac_switch(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     let x = egui::lerp((rect.left() + 15.0)..=(rect.right() - 15.0), t);
     let painter = ui.painter();
     painter.rect_filled(rect, 15.0, track);
-    painter.rect_stroke(
-        rect.shrink(0.5),
-        14.5,
-        Stroke::new(1.0_f32, Color32::from_white_alpha(if p.dark { 60 } else { 150 })),
-    );
+    if !p.m3 {
+        painter.rect_stroke(
+            rect.shrink(0.5),
+            14.5,
+            Stroke::new(1.0_f32, Color32::from_white_alpha(if p.dark { 60 } else { 150 })),
+        );
+    }
     // Soft shadow, then the glossy white thumb.
     painter.circle_filled(
         Pos2::new(x, rect.center().y + 1.5),
@@ -1161,24 +1208,24 @@ fn m3_button(
     let (rect, resp) = ui.allocate_exact_size(vec2(w, height), sense);
     let down = enabled && resp.is_pointer_button_down_on();
     let hot = enabled && resp.hovered();
-    let radius = if is_chip { 8.0 } else { rect.height() / 2.0 };
+    let radius = rect.height() / 2.0;
 
-    let (mut base, mut fg, outline) = match look {
-        Look::Primary => (p.accent, p.on_accent, None),
-        Look::Glass => (p.fill, p.text, None),
-        Look::Tint(c) => (c.gamma_multiply(0.16), c, None),
-        Look::Chip(true) => (p.fill, p.text, None),
-        Look::Chip(false) => (Color32::TRANSPARENT, p.text2, Some(p.text3)),
+    let (mut base, mut fg) = match look {
+        Look::Primary => (p.accent, p.on_accent),
+        Look::Glass => (p.card, p.text),
+        Look::Tint(c) => (c.gamma_multiply(0.16), c),
+        Look::Chip(true) => (p.tonal, p.text),
+        Look::Chip(false) => (p.card, p.text),
     };
     if !enabled {
         base = p.text.gamma_multiply(0.12);
         fg = p.text.gamma_multiply(0.38);
     }
     let painter = ui.painter();
-    painter.rect_filled(rect, radius, base);
-    if let Some(o) = outline {
-        painter.rect_stroke(rect.shrink(0.5), radius, Stroke::new(1.0_f32, o));
+    if enabled && matches!(look, Look::Glass | Look::Chip(false)) {
+        raised(painter, rect, radius);
     }
+    painter.rect_filled(rect, radius, base);
     if down {
         painter.rect_filled(rect, radius, fg.gamma_multiply(0.12));
     } else if hot {
@@ -1337,10 +1384,10 @@ fn capsule(
 
 fn thin_progress(ui: &mut egui::Ui, frac: f32) {
     let p = pal();
-    let h = if p.m3 { 4.0 } else { 5.0 };
+    let h = if p.m3 { 7.0 } else { 5.0 };
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), egui::Sense::hover());
     let track = if p.m3 {
-        p.text3.gamma_multiply(0.35)
+        p.fill_press
     } else {
         p.fill
     };
@@ -1459,13 +1506,55 @@ fn glyph_pin(painter: &egui::Painter, c: Pos2, col: Color32) {
     painter.line_segment([c + vec2(0.0, 1.0), c + vec2(0.0, 9.0)], s);
 }
 
+fn glyph_doc(painter: &egui::Painter, c: Pos2, col: Color32) {
+    let s = Stroke::new(1.9_f32, col);
+    painter.rect_stroke(Rect::from_center_size(c, vec2(15.0, 19.0)), 3.5, s);
+    painter.line_segment([c + vec2(-3.5, -3.5), c + vec2(3.5, -3.5)], s);
+    painter.line_segment([c + vec2(-3.5, 0.5), c + vec2(3.5, 0.5)], s);
+    painter.line_segment([c + vec2(-3.5, 4.5), c + vec2(1.0, 4.5)], s);
+}
+
+fn glyph_swap(painter: &egui::Painter, c: Pos2, col: Color32) {
+    let s = Stroke::new(1.9_f32, col);
+    // Right-pointing arrow on top, left-pointing arrow below.
+    painter.line_segment([c + vec2(-9.0, -4.5), c + vec2(9.0, -4.5)], s);
+    painter.line_segment([c + vec2(4.5, -9.0), c + vec2(9.0, -4.5)], s);
+    painter.line_segment([c + vec2(4.5, 0.0), c + vec2(9.0, -4.5)], s);
+    painter.line_segment([c + vec2(9.0, 4.5), c + vec2(-9.0, 4.5)], s);
+    painter.line_segment([c + vec2(-4.5, 0.0), c + vec2(-9.0, 4.5)], s);
+    painter.line_segment([c + vec2(-4.5, 9.0), c + vec2(-9.0, 4.5)], s);
+}
+
+fn glyph_sliders(painter: &egui::Painter, c: Pos2, col: Color32) {
+    let s = Stroke::new(1.9_f32, col);
+    painter.line_segment([c + vec2(-9.0, -5.0), c + vec2(9.0, -5.0)], s);
+    painter.line_segment([c + vec2(-9.0, 5.0), c + vec2(9.0, 5.0)], s);
+    painter.circle_filled(c + vec2(3.0, -5.0), 3.6, pal().card);
+    painter.circle_stroke(c + vec2(3.0, -5.0), 3.6, s);
+    painter.circle_filled(c + vec2(-3.0, 5.0), 3.6, pal().card);
+    painter.circle_stroke(c + vec2(-3.0, 5.0), 3.6, s);
+}
+
+fn glyph_folder(painter: &egui::Painter, c: Pos2, col: Color32) {
+    let s = Stroke::new(1.9_f32, col);
+    painter.add(egui::Shape::line(
+        vec![
+            c + vec2(-9.5, -4.0),
+            c + vec2(-9.5, -7.0),
+            c + vec2(-3.0, -7.0),
+            c + vec2(-0.5, -4.0),
+            c + vec2(9.5, -4.0),
+            c + vec2(9.5, 7.5),
+            c + vec2(-9.5, 7.5),
+            c + vec2(-9.5, -4.0),
+        ],
+        s,
+    ));
+}
+
 /// Dark, see-through disc that holds a glyph (the round icon wells in the mockup).
 fn badge_color() -> Color32 {
-    if pal().dark {
-        Color32::from_rgba_unmultiplied(8, 22, 62, 140)
-    } else {
-        Color32::from_rgba_unmultiplied(40, 80, 150, 80)
-    }
+    pal().well
 }
 
 /// Large glass pill with an icon well on the left and a two-line label, used for the drop
@@ -1479,6 +1568,7 @@ fn glass_tile(
     subtitle: &str,
     highlight: f32,
     interactive: bool,
+    tonal: bool,
 ) -> egui::Response {
     let p = pal();
     let sense = if interactive {
@@ -1494,35 +1584,50 @@ fn glass_tile(
     } else {
         p.card
     };
-    let fill = base.lerp_to_gamma(p.accent.gamma_multiply(0.55), highlight);
-    let edge = p.card_edge.lerp_to_gamma(p.accent, highlight);
+    let glow = if p.m3 { p.tonal } else { p.accent.gamma_multiply(0.55) };
+    let fill = base.lerp_to_gamma(glow, highlight);
     let radius = height / 2.0;
-    let painter = ui.painter().with_clip_rect(rect);
-    painter.rect_filled(rect, radius, fill);
-    // Light catching the top half of the glass.
-    painter.rect_filled(
-        Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.center().y)),
-        Rounding {
-            nw: radius,
-            ne: radius,
-            sw: 0.0,
-            se: 0.0,
-        },
-        Color32::from_white_alpha(if p.dark { 10 } else { 40 }),
-    );
-    painter.rect_stroke(rect.shrink(0.5), radius, Stroke::new(1.0_f32, edge));
+    if p.m3 {
+        // Raised, soft-shadowed surface.
+        raised(ui.painter(), rect, radius);
+        ui.painter().rect_filled(rect, radius, fill);
+    } else {
+        let edge = p.card_edge.lerp_to_gamma(p.accent, highlight);
+        ui.painter().rect_filled(rect, radius, fill);
+        // Light catching the top half of the glass.
+        ui.painter().rect_filled(
+            Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.center().y)),
+            Rounding {
+                nw: radius,
+                ne: radius,
+                sw: 0.0,
+                se: 0.0,
+            },
+            Color32::from_white_alpha(if p.dark { 10 } else { 40 }),
+        );
+        ui.painter()
+            .rect_stroke(rect.shrink(0.5), radius, Stroke::new(1.0_f32, edge));
+    }
 
+    let painter = ui.painter().with_clip_rect(rect);
     let disc = height * 0.62;
     let c = Pos2::new(rect.left() + (height - disc) / 2.0 + disc / 2.0, rect.center().y);
-    painter.circle_filled(c, disc / 2.0, badge_color());
+    let well = if p.m3 && tonal { p.tonal } else { p.well };
+    painter.circle_filled(c, disc / 2.0, well);
     glyph(&painter, c, p.text);
 
     let tx = c.x + disc / 2.0 + 12.0;
+    let size = if width > 260.0 { 17.0 } else { 14.5 };
+    let title_font = if p.m3 {
+        FontId::proportional(size + 1.0)
+    } else {
+        sb_font(size)
+    };
     painter.text(
         Pos2::new(tx, rect.center().y - 9.0),
         Align2::LEFT_CENTER,
         title,
-        sb_font(if width > 260.0 { 17.0 } else { 14.5 }),
+        title_font,
         p.text,
     );
     painter.text(
@@ -1539,6 +1644,37 @@ fn glass_tile(
     }
 }
 
+/// Raised pill with a glyph and a label (Material 3 "All settings" / "Choose folder").
+fn icon_pill(ui: &mut egui::Ui, glyph: Glyph, label: &str, height: f32) -> egui::Response {
+    let p = pal();
+    let font = FontId::proportional(14.5);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), font.clone(), p.text);
+    let w = galley.size().x + 66.0;
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, height), egui::Sense::click());
+    let fill = if resp.is_pointer_button_down_on() {
+        p.fill_press
+    } else if resp.hovered() {
+        p.fill_hover
+    } else {
+        p.card
+    };
+    let radius = height / 2.0;
+    raised(ui.painter(), rect, radius);
+    ui.painter().rect_filled(rect, radius, fill);
+    let ic = Pos2::new(rect.left() + 30.0, rect.center().y);
+    glyph(ui.painter(), ic, p.text);
+    ui.painter().text(
+        Pos2::new(ic.x + 20.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        label,
+        font,
+        p.text,
+    );
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// Big round quick-action button: a glass ring around a darker well with a glyph in it.
 fn quick_circle(ui: &mut egui::Ui, size: f32, glyph: Glyph, active: bool) -> egui::Response {
     let p = pal();
@@ -1551,6 +1687,13 @@ fn quick_circle(ui: &mut egui::Ui, size: f32, glyph: Glyph, active: bool) -> egu
         p.card
     };
     let c = rect.center();
+    if p.m3 {
+        let fill = if active { p.tonal } else { outer };
+        raised(ui.painter(), rect, size / 2.0);
+        ui.painter().circle_filled(c, size / 2.0, fill);
+        glyph(ui.painter(), c, p.text);
+        return resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    }
     let painter = ui.painter();
     painter.circle_filled(c, size / 2.0, outer);
     painter.circle_stroke(c, size / 2.0 - 0.5, Stroke::new(1.0_f32, p.card_edge));
@@ -1641,15 +1784,30 @@ fn transfers_summary(ui: &mut egui::Ui, transfers: &[TransferStatus]) {
         .iter()
         .fold((0u64, 0u64), |(d, t), x| (d + x.done, t + x.total));
     let frac = if total == 0 { 0.0 } else { done as f32 / total as f32 };
+    let p = pal();
+    let title = format!("{} · {} {}", tr("Transfers"), active.len(), tr("active"));
     card(ui, |ui| {
-        ui.label(semibold(format!("{} · {} {}", tr("Transfers"), active.len(), tr("active")), 15.0).color(pal().text));
-        ui.add_space(2.0);
-        thin_progress(ui, frac);
+        if p.m3 {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 16.0;
+                let (r, _) = ui.allocate_exact_size(vec2(30.0, 30.0), egui::Sense::hover());
+                glyph_swap(ui.painter(), r.center(), p.text);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 8.0;
+                    ui.label(RichText::new(title.clone()).size(16.0).color(p.text));
+                    thin_progress(ui, frac);
+                });
+            });
+        } else {
+            ui.label(semibold(title.clone(), 15.0).color(p.text));
+            ui.add_space(2.0);
+            thin_progress(ui, frac);
+        }
     });
 }
 
-/// The macOS drop target: a wide glass pill that lights up while files hover over it.
-fn mac_drop_zone(ui: &mut egui::Ui, hovering: bool) {
+/// The drop target: a wide pill that lights up while files hover over it.
+fn drop_zone(ui: &mut egui::Ui, hovering: bool) {
     let t = ui
         .ctx()
         .animate_bool_responsive(egui::Id::new("drop_zone_hover"), hovering);
@@ -1663,58 +1821,7 @@ fn mac_drop_zone(ui: &mut egui::Ui, hovering: bool) {
         tr("Drag here to send"),
         t,
         false,
-    );
-}
-
-fn drop_zone(ui: &mut egui::Ui, hovering: bool) {
-    let p = pal();
-    if !p.m3 {
-        mac_drop_zone(ui, hovering);
-        return;
-    }
-    let t = ui
-        .ctx()
-        .animate_bool_responsive(egui::Id::new("drop_zone_hover"), hovering);
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 128.0), egui::Sense::hover());
-    let fill = p.card.lerp_to_gamma(p.accent.gamma_multiply(0.16), t);
-    let line = p.text3.gamma_multiply(0.7).lerp_to_gamma(p.accent, t);
-    let painter = ui.painter();
-    let rad = if p.m3 { 28.0 } else { 22.0 };
-    painter.rect_filled(rect, rad, fill);
-    let path = rounded_rect_path(rect.shrink(1.0), rad);
-    painter.extend(egui::Shape::dashed_line(
-        &path,
-        Stroke::new(1.4_f32, line),
-        7.0,
-        6.0,
-    ));
-
-    let c = rect.center() + vec2(0.0, -22.0);
-    let badge = p.accent.gamma_multiply(0.16 + 0.14 * t);
-    if p.m3 {
-        painter.rect_filled(Rect::from_center_size(c, vec2(56.0, 40.0)), 16.0, badge);
-    } else {
-        painter.circle_filled(c, 22.0, badge);
-    }
-    arrow_tray(painter, c, p.accent);
-
-    painter.text(
-        rect.center() + vec2(0.0, 17.0),
-        Align2::CENTER_CENTER,
-        if hovering {
-            "Release to send"
-        } else {
-            "Drop to send"
-        },
-        sb_font(15.0),
-        if hovering { p.accent } else { p.text },
-    );
-    painter.text(
-        rect.center() + vec2(0.0, 38.0),
-        Align2::CENTER_CENTER,
-        "Files appear on your other PCs",
-        FontId::proportional(11.5),
-        p.text2,
+        true,
     );
 }
 
@@ -2858,7 +2965,8 @@ impl eframe::App for ShelfApp {
                 );
             }
 
-            let inner = panel.shrink2(vec2(16.0, 16.0));
+            let inset = if p.m3 { 20.0 } else { 16.0 };
+            let inner = panel.shrink2(vec2(inset, inset));
             ui.allocate_new_ui(egui::UiBuilder::new().max_rect(inner), |ui| {
                 ui.set_clip_rect(inner.expand2(vec2(2.0, 0.0)));
                 egui::ScrollArea::vertical()
@@ -2888,9 +2996,9 @@ impl eframe::App for ShelfApp {
                             if !self.device_name.is_empty() {
                                 if p.m3 {
                                     ui.label(
-                                        RichText::new(shorten(&self.device_name, 26))
-                                            .size(12.0)
-                                            .color(p.text2),
+                                        RichText::new(shorten(&self.device_name, 22))
+                                            .size(17.0)
+                                            .color(p.text),
                                     );
                                 } else {
                                     ui.label(
@@ -2904,48 +3012,30 @@ impl eframe::App for ShelfApp {
                             if close_button(ui).clicked() {
                                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                             }
-                            // On the glass layout the pin lives in the quick-action row.
-                            if p.m3 {
-                                pin_button(ui, &mut self.pinned);
-                            }
+                            // The pin lives in the quick-action row.
                         });
                     });
 
                     if !self.status.is_empty() {
                         status_pill(ui, &self.status);
                     }
-                    if p.m3 {
-                        transfer_cards(ui, &self.transfers, &mut actions);
-                        // Drop zone and clipboard.
-                        drop_zone(ui, hovering_files);
-                        if capsule(
-                            ui,
-                            tr("Send Clipboard"),
-                            Look::Primary,
-                            38.0,
-                            Some(ui.available_width()),
-                            true,
-                        )
-                        .clicked()
-                        {
-                            actions.push(Action::SendClipboard);
-                        }
-                    } else {
-                        // macOS glass home: drop pill, Clipboard / Devices tiles, transfers,
+                    {
+                        // Home layout shared by the macOS glass and Material 3 styles: drop pill, Clipboard / Devices tiles, transfers,
                         // round quick actions and the All settings switch.
                         drop_zone(ui, hovering_files);
                         let tile_gap = 8.0;
                         let tile_w = ((ui.available_width() - tile_gap) / 2.0).floor();
                         let online = paired.iter().filter(|d| d.addr.is_some()).count();
                         let online_label = format!("{online} {}", tr("online"));
+                        let clip_glyph: Glyph = if p.m3 { glyph_doc } else { glyph_copy };
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = tile_gap;
-                            if glass_tile(ui, tile_w, 80.0, glyph_copy, tr("Clipboard"), tr("Send"), 0.0, true)
+                            if glass_tile(ui, tile_w, 80.0, clip_glyph, tr("Clipboard"), tr("Send"), 0.0, true, false)
                                 .clicked()
                             {
                                 actions.push(Action::SendClipboard);
                             }
-                            if glass_tile(ui, tile_w, 80.0, glyph_monitor, tr("Devices"), &online_label, 0.0, true)
+                            if glass_tile(ui, tile_w, 80.0, glyph_monitor, tr("Devices"), &online_label, 0.0, true, false)
                                 .clicked()
                             {
                                 self.show_all_settings = true;
@@ -2991,7 +3081,12 @@ impl eframe::App for ShelfApp {
                         } else {
                             tr("All settings")
                         };
-                        if capsule(ui, settings_label, Look::Glass, 36.0, None, true).clicked() {
+                        let settings_pill = if p.m3 {
+                            icon_pill(ui, glyph_sliders, settings_label, 42.0)
+                        } else {
+                            capsule(ui, settings_label, Look::Glass, 36.0, None, true)
+                        };
+                        if settings_pill.clicked() {
                             self.show_all_settings = !self.show_all_settings;
                         }
                     }
@@ -3059,18 +3154,26 @@ impl eframe::App for ShelfApp {
                         hairline(ui);
                         ui.horizontal(|ui| {
                             ui.label(RichText::new("Download location").size(13.5).color(p.text));
-                            if capsule(ui, "Choose folder", Look::Glass, 28.0, None, true).clicked() {
+                            let choose = if p.m3 {
+                                icon_pill(ui, glyph_folder, "Choose folder", 40.0)
+                            } else {
+                                capsule(ui, "Choose folder", Look::Glass, 28.0, None, true)
+                            };
+                            if choose.clicked() {
                                 actions.push(Action::ChooseReceiveFolder);
                             }
                         });
-                        ui.label(
-                            RichText::new(receive_dir
-                                .as_ref()
-                                .map(|path| path.display().to_string())
-                                .unwrap_or_else(|| shelf_core::inbox_dir().display().to_string()))
-                            .size(10.5)
-                            .color(p.text2),
-                        );
+                        let dir_text = receive_dir
+                            .as_ref()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_else(|| shelf_core::inbox_dir().display().to_string());
+                        ui.horizontal(|ui| {
+                            if p.m3 {
+                                let (r, _) = ui.allocate_exact_size(vec2(22.0, 22.0), egui::Sense::hover());
+                                glyph_folder(ui.painter(), r.center(), p.text2);
+                            }
+                            ui.label(RichText::new(dir_text).size(10.5).color(p.text2));
+                        });
                         if show_more {
                         hairline(ui);
                         ui.label(RichText::new("Device groups").size(13.5).color(p.text));
