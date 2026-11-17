@@ -409,8 +409,8 @@ impl Pal {
             // Tinted, see-through blue glass.
             panel: Color32::from_rgba_unmultiplied(26, 48, 98, 176),
             panel_edge: Color32::from_white_alpha(78),
-            card: Color32::from_white_alpha(30),
-            card_edge: Color32::from_white_alpha(58),
+            card: Color32::from_white_alpha(40),
+            card_edge: Color32::from_white_alpha(68),
             field: Color32::from_rgba_unmultiplied(8, 20, 56, 90),
             text: Color32::from_rgb(248, 250, 255),
             text2: Color32::from_rgb(196, 212, 238),
@@ -421,10 +421,10 @@ impl Pal {
             orange: Color32::from_rgb(255, 169, 40),
             purple: Color32::from_rgb(191, 110, 250),
             sep: Color32::from_white_alpha(40),
-            fill: Color32::from_white_alpha(34),
-            fill_hover: Color32::from_white_alpha(52),
-            fill_press: Color32::from_white_alpha(70),
-            well: Color32::from_rgba_unmultiplied(8, 22, 62, 140),
+            fill: Color32::from_white_alpha(40),
+            fill_hover: Color32::from_white_alpha(58),
+            fill_press: Color32::from_white_alpha(76),
+            well: Color32::from_rgba_unmultiplied(6, 40, 84, 128),
             tonal: Color32::from_rgb(52, 120, 246),
         }
     }
@@ -511,6 +511,93 @@ impl Pal {
             tonal: Color32::from_rgb(200, 226, 209),
         }
     }
+}
+
+/// Colour field behind the macOS glass panel: the soft blue / teal wallpaper blur of the mockup,
+/// with a warm glow on the left edge and a pale patch low on the right. Built as a mesh whose
+/// outline follows the panel's rounded corners, so the colours blend smoothly.
+fn glass_backdrop(painter: &egui::Painter, rect: Rect, radius: f32, dark: bool) {
+    const COLS: usize = 5;
+    const ROWS: usize = 8;
+    const GRID: [[(u8, u8, u8); COLS]; ROWS] = [
+        [(165, 192, 205), (112, 170, 205), (60, 160, 215), (52, 168, 212), (95, 182, 190)],
+        [(150, 188, 196), (82, 170, 205), (58, 165, 212), (68, 170, 205), (88, 178, 192)],
+        [(172, 172, 125), (92, 165, 192), (40, 132, 215), (34, 126, 220), (60, 152, 215)],
+        [(82, 142, 190), (30, 102, 205), (14, 72, 200), (30, 120, 215), (45, 160, 215)],
+        [(15, 82, 200), (10, 72, 205), (30, 112, 210), (40, 150, 210), (50, 160, 210)],
+        [(20, 100, 210), (30, 110, 200), (70, 150, 200), (120, 176, 205), (150, 186, 205)],
+        [(30, 110, 210), (40, 130, 215), (60, 150, 220), (100, 176, 225), (140, 190, 225)],
+        [(40, 130, 215), (30, 120, 215), (36, 126, 220), (50, 140, 215), (60, 150, 210)],
+    ];
+    let smooth = |t: f32| t * t * (3.0 - 2.0 * t);
+    let sample = |u: f32, v: f32| -> Color32 {
+        let gx = u.clamp(0.0, 1.0) * (COLS - 1) as f32;
+        let gy = v.clamp(0.0, 1.0) * (ROWS - 1) as f32;
+        let (j, i) = ((gx as usize).min(COLS - 2), (gy as usize).min(ROWS - 2));
+        let (fx, fy) = (smooth(gx - j as f32), smooth(gy - i as f32));
+        let mut rgb = [0.0_f32; 3];
+        for (k, out) in rgb.iter_mut().enumerate() {
+            let at = |r: usize, c: usize| {
+                let (r8, g8, b8) = GRID[r][c];
+                [r8, g8, b8][k] as f32
+            };
+            let top = at(i, j) * (1.0 - fx) + at(i, j + 1) * fx;
+            let bottom = at(i + 1, j) * (1.0 - fx) + at(i + 1, j + 1) * fx;
+            *out = top * (1.0 - fy) + bottom * fy;
+        }
+        if !dark {
+            // Light mode: the same wallpaper, washed out towards white.
+            for c in rgb.iter_mut() {
+                *c = *c * 0.5 + 244.0 * 0.5;
+            }
+        }
+        Color32::from_rgba_unmultiplied(rgb[0] as u8, rgb[1] as u8, rgb[2] as u8, 240)
+    };
+
+    let r = radius.min(rect.height() / 2.0).min(rect.width() / 2.0);
+    let corner_steps = 10;
+    let mut ys: Vec<f32> = Vec::new();
+    for i in 0..=corner_steps {
+        let a = std::f32::consts::FRAC_PI_2 * i as f32 / corner_steps as f32;
+        ys.push(rect.top() + r * (1.0 - a.cos()));
+    }
+    let (mid_top, mid_bottom) = (rect.top() + r, rect.bottom() - r);
+    let mid_rows = (((mid_bottom - mid_top) / 36.0).ceil() as usize).max(1);
+    for i in 1..mid_rows {
+        ys.push(mid_top + (mid_bottom - mid_top) * i as f32 / mid_rows as f32);
+    }
+    for i in (0..=corner_steps).rev() {
+        let a = std::f32::consts::FRAC_PI_2 * i as f32 / corner_steps as f32;
+        ys.push(rect.bottom() - r * (1.0 - a.cos()));
+    }
+
+    let cols = 16;
+    let mut mesh = egui::Mesh::default();
+    for &y in &ys {
+        let edge_dy = (y - rect.top()).min(rect.bottom() - y);
+        let inset = if edge_dy < r {
+            r - (r * r - (r - edge_dy) * (r - edge_dy)).max(0.0).sqrt()
+        } else {
+            0.0
+        };
+        let (x0, x1) = (rect.left() + inset, rect.right() - inset);
+        for j in 0..=cols {
+            let x = x0 + (x1 - x0) * j as f32 / cols as f32;
+            let u = (x - rect.left()) / rect.width().max(1.0);
+            let v = (y - rect.top()) / rect.height().max(1.0);
+            mesh.colored_vertex(Pos2::new(x, y), sample(u, v));
+        }
+    }
+    let stride = (cols + 1) as u32;
+    for row in 0..(ys.len() as u32 - 1) {
+        for j in 0..cols as u32 {
+            let a = row * stride + j;
+            let (b, c, d) = (a + 1, a + stride, a + stride + 1);
+            mesh.add_triangle(a, b, c);
+            mesh.add_triangle(b, d, c);
+        }
+    }
+    painter.add(egui::Shape::mesh(mesh));
 }
 
 fn panel_radius() -> f32 {
@@ -1017,25 +1104,20 @@ fn glass_circle(ui: &mut egui::Ui, active: bool) -> (Rect, egui::Response) {
     } else {
         p.fill
     };
-    ui.painter().circle_filled(rect.center(), 17.0, fill);
+    ui.painter().circle_filled(rect.center(), 16.0, fill);
     ui.painter()
-        .circle_stroke(rect.center(), 16.5, Stroke::new(1.0_f32, p.card_edge));
+        .circle_stroke(rect.center(), 15.5, Stroke::new(1.0_f32, p.card_edge));
     (rect, resp.on_hover_cursor(egui::CursorIcon::PointingHand))
 }
 
 fn close_button(ui: &mut egui::Ui) -> egui::Response {
     let (rect, resp) = glass_circle(ui, false);
     let c = rect.center();
-    let col = if resp.hovered() || pal().m3 {
-        pal().text
-    } else {
-        pal().text2
-    };
-    let s = Stroke::new(1.6_f32, col);
+    let s = Stroke::new(2.0_f32, pal().text);
     ui.painter()
-        .line_segment([c + vec2(-4.0, -4.0), c + vec2(4.0, 4.0)], s);
+        .line_segment([c + vec2(-4.5, -4.5), c + vec2(4.5, 4.5)], s);
     ui.painter()
-        .line_segment([c + vec2(4.0, -4.0), c + vec2(-4.0, 4.0)], s);
+        .line_segment([c + vec2(4.5, -4.5), c + vec2(-4.5, 4.5)], s);
     resp.on_hover_text("Quit Shelf")
 }
 
@@ -2947,7 +3029,11 @@ impl eframe::App for ShelfApp {
             };
             let radius = panel_radius();
             ui.painter().add(shadow.as_shape(panel, radius));
-            ui.painter().rect_filled(panel, radius, p.panel);
+            if p.m3 {
+                ui.painter().rect_filled(panel, radius, p.panel);
+            } else {
+                glass_backdrop(ui.painter(), panel, radius, p.dark);
+            }
             if !p.m3 {
                 // Inner highlight along the rim, like light catching the edge of the glass.
                 ui.painter().rect_stroke(
@@ -2981,11 +3067,27 @@ impl eframe::App for ShelfApp {
                     // Header.
                     ui.horizontal(|ui| {
                         match &self.logo {
-                            Some(tex) => {
+                            Some(tex) if p.m3 => {
                                 ui.add(egui::Image::new(egui::load::SizedTexture::new(
                                     tex.id(),
                                     vec2(34.0, 34.0),
                                 )));
+                            }
+                            Some(tex) => {
+                                // Glass plate behind the logo, like the mockup.
+                                let (plate, _) =
+                                    ui.allocate_exact_size(vec2(38.0, 38.0), egui::Sense::hover());
+                                ui.painter().rect_filled(plate, 12.0, p.card);
+                                ui.painter().rect_stroke(
+                                    plate.shrink(0.5),
+                                    12.0,
+                                    Stroke::new(1.0_f32, p.card_edge),
+                                );
+                                egui::Image::new(egui::load::SizedTexture::new(
+                                    tex.id(),
+                                    vec2(30.0, 30.0),
+                                ))
+                                .paint_at(ui, Rect::from_center_size(plate.center(), vec2(30.0, 30.0)));
                             }
                             None => {
                                 ui.allocate_space(vec2(34.0, 34.0));
