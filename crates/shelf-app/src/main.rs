@@ -13,7 +13,7 @@ use global_hotkey::{
 };
 use shelf_core::{
     Command, DeviceGroup, Event, Handle, ItemKind, NearbyDevice, Payload, PeerStatus, ReceivedItem,
-    Room, RoomRole, RoomUpdate, Target, TransferDirection,
+    Room, RoomRole, RoomUpdate, Target, TransferDirection, WebDropOffer,
 };
 use std::cell::Cell;
 use std::io::{Read, Write};
@@ -228,6 +228,15 @@ fn tr(key: &'static str) -> &'static str {
         (Locale::French, "Copy link") => "Copier le lien",
         (Locale::Spanish, "Copy link") => "Copiar enlace",
         (Locale::German, "Copy link") => "Link kopieren",
+        (Locale::French, "Add files") => "Ajouter des fichiers",
+        (Locale::Spanish, "Add files") => "Añadir archivos",
+        (Locale::German, "Add files") => "Dateien hinzufügen",
+        (Locale::French, "Add folder") => "Ajouter un dossier",
+        (Locale::Spanish, "Add folder") => "Añadir carpeta",
+        (Locale::German, "Add folder") => "Ordner hinzufügen",
+        (Locale::French, "Shared with the phone") => "Partagé avec le téléphone",
+        (Locale::Spanish, "Shared with the phone") => "Compartido con el móvil",
+        (Locale::German, "Shared with the phone") => "Mit dem Handy geteilt",
         (Locale::French, "Stop") => "Arrêter",
         (Locale::Spanish, "Stop") => "Detener",
         (Locale::German, "Stop") => "Beenden",
@@ -2279,6 +2288,12 @@ enum Action {
     DragOut(usize),
     /// Opens or closes the QR code a phone can scan to send files to this shelf.
     TogglePhoneUpload,
+    /// Picks files to offer on the phone page for the phone to download.
+    PhoneOfferFiles,
+    /// Picks a folder to offer on the phone page (it downloads as a zip).
+    PhoneOfferFolder,
+    /// Takes one offered item off the phone page.
+    PhoneWithdraw(u64),
     StartPairing,
     CancelPairing,
     OpenPair(NearbyDevice),
@@ -2366,6 +2381,8 @@ struct ShelfApp {
     assignment_files: Vec<PathBuf>,
     my_code: Option<(String, Instant)>,
     phone_upload: Option<PhoneUpload>,
+    /// Files and folders the phone page currently offers for download.
+    phone_offers: Vec<WebDropOffer>,
     pair_dialog: Option<PairDialog>,
 
     auto_copy: bool,
@@ -2507,6 +2524,7 @@ impl ShelfApp {
             assignment_files: Vec::new(),
             my_code: None,
             phone_upload: None,
+            phone_offers: Vec::new(),
             pair_dialog: None,
             auto_copy: settings.auto_copy,
             receiving_paused: false,
@@ -2700,6 +2718,7 @@ impl ShelfApp {
                 Event::PairingCleared => self.my_code = None,
                 Event::WebDropReady { url, seconds } => {
                     self.record_audit("Phone upload opened");
+                    self.phone_offers.clear();
                     self.phone_upload = Some(PhoneUpload {
                         url,
                         until: Instant::now() + Duration::from_secs(seconds),
@@ -2738,7 +2757,9 @@ impl ShelfApp {
                         });
                     }
                 }
+                Event::WebDropOffers(list) => self.phone_offers = list,
                 Event::WebDropStopped => {
+                    self.phone_offers.clear();
                     if self.phone_upload.take().is_some() {
                         self.record_audit("Phone upload closed");
                     }
@@ -3147,6 +3168,7 @@ impl eframe::App for ShelfApp {
         if let Some(upload) = &self.phone_upload {
             if Instant::now() > upload.until {
                 self.phone_upload = None;
+                self.phone_offers.clear();
             } else {
                 // Keep the countdown ticking.
                 ctx.request_repaint_after(Duration::from_millis(500));
@@ -3356,6 +3378,7 @@ impl eframe::App for ShelfApp {
                         if let Some(upload) = &self.phone_upload {
                             let left = upload.until.saturating_duration_since(Instant::now()).as_secs();
                             let url = upload.url.clone();
+                            let offers = self.phone_offers.clone();
                             card(ui, |ui| {
                                 ui.vertical_centered(|ui| {
                                     ui.label(semibold(tr("Send from your phone"), 14.0).color(p.text));
@@ -3382,6 +3405,32 @@ impl eframe::App for ShelfApp {
                                             actions.push(Action::TogglePhoneUpload);
                                         }
                                     });
+                                    ui.horizontal(|ui| {
+                                        if capsule(ui, tr("Add files"), Look::Glass, 28.0, None, true).clicked() {
+                                            actions.push(Action::PhoneOfferFiles);
+                                        }
+                                        if capsule(ui, tr("Add folder"), Look::Glass, 28.0, None, true).clicked() {
+                                            actions.push(Action::PhoneOfferFolder);
+                                        }
+                                    });
+                                    if !offers.is_empty() {
+                                        ui.label(RichText::new(tr("Shared with the phone")).size(11.5).color(p.text3));
+                                    }
+                                    for offer in &offers {
+                                        ui.push_id(offer.id, |ui| {
+                                            ui.horizontal(|ui| {
+                                                let label = format!(
+                                                    "{} \u{b7} {}",
+                                                    shorten(&offer.name, 26),
+                                                    human_size(offer.size)
+                                                );
+                                                ui.label(RichText::new(label).size(11.5).color(p.text2));
+                                                if capsule(ui, tr("Remove"), Look::Glass, 24.0, None, true).clicked() {
+                                                    actions.push(Action::PhoneWithdraw(offer.id));
+                                                }
+                                            });
+                                        });
+                                    }
                                     ui.label(
                                         RichText::new(tr("Not encrypted. Use it on a network you trust."))
                                             .size(11.0)
@@ -4633,8 +4682,26 @@ impl eframe::App for ShelfApp {
                         self.drag_out(&*frame, path);
                     }
                 }
+                Action::PhoneOfferFiles => {
+                    if let Some(paths) = rfd::FileDialog::new()
+                        .set_title("Add files for the phone")
+                        .pick_files()
+                    {
+                        self.handle.send(Command::WebDropOffer(paths));
+                    }
+                }
+                Action::PhoneOfferFolder => {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_title("Add a folder for the phone")
+                        .pick_folder()
+                    {
+                        self.handle.send(Command::WebDropOffer(vec![path]));
+                    }
+                }
+                Action::PhoneWithdraw(id) => self.handle.send(Command::WebDropWithdraw(id)),
                 Action::TogglePhoneUpload => {
                     if self.phone_upload.take().is_some() {
+                        self.phone_offers.clear();
                         self.handle.send(Command::StopWebDrop);
                     } else {
                         self.handle.send(Command::StartWebDrop);
