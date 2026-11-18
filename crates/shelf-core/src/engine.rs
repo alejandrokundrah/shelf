@@ -2184,6 +2184,7 @@ async fn send_file(
     label: &str,
     room_id: Option<&str>,
     submission: Option<&str>,
+    known_hash: Option<[u8; 32]>,
 ) -> Result<()> {
     clear_cancelled(shared, TransferDirection::Upload, label, &dest.name);
     let prepared = prepare_transfer(path, label)?;
@@ -2195,19 +2196,19 @@ async fn send_file(
         cleanup_transfer(&prepared);
         bail!("file is too large");
     }
-    let mut hash_reader = tokio::fs::File::open(&source_path)
-        .await
-        .with_context(|| format!("could not open source file: {}", path.display()))?;
-    let mut hasher = Sha256::new();
-    let mut hash_buf = vec![0u8; CHUNK];
-    loop {
-        let n = hash_reader.read(&mut hash_buf).await?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&hash_buf[..n]);
-    }
-    let hash: [u8; 32] = hasher.finalize().into();
+    // The receiver is told about the file only once this hash is in the header, so it is the
+    // one step before the first byte that grows with file size. A hash computed earlier for
+    // the same file is reused; archives built for folders are new files and are hashed here.
+    let hash: [u8; 32] = match known_hash {
+        Some(hash) if !prepared.temporary => hash,
+        _ => match hash_file(&source_path).await {
+            Ok(hash) => hash,
+            Err(error) => {
+                cleanup_transfer(&prepared);
+                return Err(error);
+            }
+        },
+    };
     let header = ItemHeader {
         kind: ItemKind::File,
         name: label.to_string(),
@@ -2354,6 +2355,19 @@ fn compress_text(bytes: &[u8]) -> Result<(Vec<u8>, bool)> {
 }
 
 async fn send_payload(shared: Arc<Shared>, targets: Vec<Dest>, payload: Payload) {
+    // Hash each plain file once instead of once per destination.
+    let mut file_hashes: HashMap<PathBuf, [u8; 32]> = HashMap::new();
+    if let Payload::Files(paths) = &payload {
+        if targets.len() > 1 {
+            for path in paths {
+                if path.is_file() {
+                    if let Ok(hash) = hash_file(path).await {
+                        file_hashes.insert(path.clone(), hash);
+                    }
+                }
+            }
+        }
+    }
     for dest in targets {
         match &payload {
             Payload::Files(paths) => {
@@ -2362,7 +2376,9 @@ async fn send_payload(shared: Arc<Shared>, targets: Vec<Dest>, payload: Payload)
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_else(|| "file".to_string());
-                    let res = send_file(&shared, &dest, path, &label, None, None).await;
+                    let known_hash = file_hashes.get(path).copied();
+                    let res =
+                        send_file(&shared, &dest, path, &label, None, None, known_hash).await;
                     shared.finish_send(&dest.name, label, res);
                 }
             }
@@ -2458,6 +2474,7 @@ async fn send_room_file(
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| "file".to_string());
+    let file_hash = hash_file(&path).await.ok();
     for dest in targets {
         let result = send_file(
             &shared,
@@ -2466,11 +2483,12 @@ async fn send_room_file(
             &label,
             Some(&room_id),
             submission.as_deref(),
+            file_hash,
         )
         .await;
         shared.finish_send(&dest.name, label.clone(), result);
     }
-    if let Ok(hash) = hash_file(&path).await {
+    if let Some(hash) = file_hash {
         let mut config = shared.config.lock().unwrap();
         let uploader = config.device_name.clone();
         let timestamp = std::time::SystemTime::now()
@@ -2530,18 +2548,23 @@ async fn send_room_files(
     }
 }
 
+/// SHA-256 of a file. Reads in large sequential blocks on a blocking thread: many small async
+/// reads are much slower on Windows (every one pays a thread hand-off and a virus-scanner hook).
 async fn hash_file(path: &Path) -> Result<[u8; 32]> {
-    let mut file = tokio::fs::File::open(path)
-        .await
-        .with_context(|| format!("could not read file for hashing: {}", path.display()))?;
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0u8; CHUNK];
-    loop {
-        let count = file.read(&mut buffer).await?;
-        if count == 0 {
-            break;
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || -> Result<[u8; 32]> {
+        let mut file = std::fs::File::open(&path)
+            .with_context(|| format!("could not read file for hashing: {}", path.display()))?;
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![0u8; 4 * 1024 * 1024];
+        loop {
+            let count = file.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            hasher.update(&buffer[..count]);
         }
-        hasher.update(&buffer[..count]);
-    }
-    Ok(hasher.finalize().into())
+        Ok(hasher.finalize().into())
+    })
+    .await?
 }
