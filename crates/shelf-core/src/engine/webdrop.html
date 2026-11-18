@@ -2,66 +2,209 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="robots" content="noindex,nofollow">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#faf8ff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#11131a" media="(prefers-color-scheme: dark)">
 <title>Send to Shelf</title>
 <style>
+/* Material 3 color roles, light and dark. No external fonts or images: this page is served
+   from a PC on the local network and must work without internet. */
 :root {
   color-scheme: light dark;
-  --bg: #f2f4f9; --card: #ffffff; --text: #14182a; --muted: #5d6580;
-  --accent: #3478f6; --on-accent: #ffffff; --good: #1f9d55; --bad: #d93a2f; --track: #dfe4f0;
+  --bg: #faf8ff;
+  --surface: #f1f0f7;
+  --surface-high: #e7e7ef;
+  --on-surface: #1a1b22;
+  --on-variant: #44474f;
+  --outline: #74777f;
+  --outline-variant: #c4c6d0;
+  --primary: #305fa8;
+  --on-primary: #ffffff;
+  --primary-container: #d7e3ff;
+  --on-primary-container: #001b3e;
+  --ok: #1b6d3a;
+  --ok-container: #b7f2c3;
+  --on-ok-container: #00210c;
+  --err: #ba1a1a;
+  --err-container: #ffdad6;
+  --on-err-container: #410002;
+  --elev1: 0 1px 2px rgba(0,0,0,.18), 0 1px 3px 1px rgba(0,0,0,.08);
+  --elev3: 0 1px 3px rgba(0,0,0,.2), 0 4px 8px 3px rgba(0,0,0,.1);
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0e1630; --card: #1a2750; --text: #f2f5ff; --muted: #a3b0d4;
-    --accent: #5b9bff; --on-accent: #0b1330; --good: #3ddc84; --bad: #ff7a70; --track: #2c3a68;
+    --bg: #11131a;
+    --surface: #1b1d26;
+    --surface-high: #272a34;
+    --on-surface: #e3e2ec;
+    --on-variant: #c4c6d0;
+    --outline: #8e9099;
+    --outline-variant: #44474f;
+    --primary: #aec6ff;
+    --on-primary: #002e69;
+    --primary-container: #1c4585;
+    --on-primary-container: #d7e3ff;
+    --ok: #9bd6a7;
+    --ok-container: #1b5130;
+    --on-ok-container: #b7f2c3;
+    --err: #ffb4ab;
+    --err-container: #93000a;
+    --on-err-container: #ffdad6;
   }
 }
-* { box-sizing: border-box; }
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html { background: var(--bg); }
 body {
-  margin: 0; padding: 20px 16px 40px; background: var(--bg); color: var(--text);
-  font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  margin: 0; color: var(--on-surface); background: var(--bg);
+  font: 400 16px/1.5 Roboto, "Google Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  padding: max(20px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+           max(32px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
 }
-main { max-width: 480px; margin: 0 auto; }
-h1 { font-size: 22px; margin: 8px 0 4px; }
-p.sub { margin: 0 0 20px; color: var(--muted); font-size: 14px; }
-.pick {
-  display: block; width: 100%; padding: 18px; border-radius: 16px; text-align: center;
-  background: var(--accent); color: var(--on-accent); font-weight: 600; font-size: 18px;
+main { max-width: 520px; margin: 0 auto; }
+svg { display: block; width: 24px; height: 24px; fill: currentColor; flex: none; }
+
+/* Header */
+header { display: flex; align-items: center; gap: 16px; margin: 4px 4px 20px; }
+.logo {
+  width: 48px; height: 48px; border-radius: 16px; display: grid; place-items: center;
+  background: var(--primary-container); color: var(--on-primary-container); flex: none;
 }
-.pick input { display: none; }
-ul { list-style: none; padding: 0; margin: 20px 0 0; }
-li { background: var(--card); border-radius: 14px; padding: 12px 14px; margin-bottom: 10px; }
-.row { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
-.name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-.state { font-size: 13px; color: var(--muted); white-space: nowrap; }
-.state.ok { color: var(--good); } .state.err { color: var(--bad); }
-.bar { height: 6px; border-radius: 3px; background: var(--track); margin-top: 8px; overflow: hidden; }
-.bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .15s; }
-#again {
-  display: none; margin-top: 8px; width: 100%; padding: 14px; border-radius: 14px; border: 0;
-  background: var(--card); color: var(--text); font: inherit; font-weight: 600;
+h1 { margin: 0; font-size: 24px; line-height: 32px; font-weight: 500; overflow-wrap: anywhere; }
+.sub { margin: 2px 0 0; color: var(--on-variant); font-size: 14px; line-height: 20px; }
+
+/* Banner (link expired, etc.) */
+.banner {
+  display: flex; gap: 12px; align-items: flex-start; margin: 0 0 16px; padding: 14px 16px;
+  border-radius: 16px; background: var(--err-container); color: var(--on-err-container);
+  font-size: 14px; line-height: 20px;
 }
-#note { margin-top: 18px; color: var(--muted); font-size: 12.5px; }
+.banner[hidden] { display: none; }
+
+/* Drop card: the whole card is one big tap target */
+.drop {
+  position: relative; display: flex; flex-direction: column; align-items: center; text-align: center;
+  gap: 4px; padding: 28px 20px 24px; border-radius: 28px; cursor: pointer; overflow: hidden;
+  background: var(--surface); border: 2px dashed var(--outline-variant);
+  transition: background-color .2s, border-color .2s;
+}
+.drop.over { background: var(--primary-container); border-color: var(--primary); }
+.drop:focus-within { outline: 3px solid var(--primary); outline-offset: 3px; }
+.sr { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; pointer-events: none; }
+.drop-icon {
+  width: 72px; height: 72px; border-radius: 50%; display: grid; place-items: center; margin-bottom: 8px;
+  background: var(--primary-container); color: var(--on-primary-container);
+}
+.drop-icon svg { width: 36px; height: 36px; }
+.drop-title { font-size: 20px; line-height: 28px; font-weight: 500; }
+.drop-sub { color: var(--on-variant); font-size: 14px; line-height: 20px; }
+
+/* Buttons */
+.btn {
+  position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  height: 56px; padding: 0 24px 0 20px; border: 0; border-radius: 16px; margin-top: 18px;
+  font-family: inherit; font-size: 16px; line-height: 24px; font-weight: 500; letter-spacing: .1px; cursor: pointer;
+  overflow: hidden; user-select: none;
+}
+.btn::after { content: ""; position: absolute; inset: 0; background: currentColor; opacity: 0; transition: opacity .15s; }
+.btn:active::after { opacity: .16; }
+@media (hover: hover) { .btn:hover::after { opacity: .08; } }
+.btn-primary { background: var(--primary); color: var(--on-primary); box-shadow: var(--elev3); }
+.btn-tonal {
+  height: 48px; width: 100%; margin-top: 4px; border-radius: 24px; padding: 0 24px;
+  background: var(--primary-container); color: var(--on-primary-container);
+}
+.btn-tonal[hidden] { display: none; }
+
+/* Transfers */
+section[hidden] { display: none; }
+.head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 28px 4px 10px; }
+h2 { margin: 0; font-size: 14px; line-height: 20px; font-weight: 500; letter-spacing: .1px; color: var(--on-variant); }
+.chip {
+  display: inline-flex; align-items: center; height: 28px; padding: 0 12px; border-radius: 8px;
+  background: var(--surface-high); color: var(--on-variant); font-size: 12px; font-weight: 500; letter-spacing: .5px;
+}
+/* minmax(0, 1fr) and min-width: 0 keep a long file name from stretching the column past the screen. */
+ul { list-style: none; margin: 0 0 12px; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.item {
+  min-width: 0; display: flex; gap: 14px; align-items: center; padding: 12px 16px 12px 12px; border-radius: 20px;
+  background: var(--surface); box-shadow: var(--elev1); animation: in .25s ease-out;
+}
+@keyframes in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.lead {
+  width: 44px; height: 44px; border-radius: 14px; display: grid; place-items: center; flex: none;
+  background: var(--surface-high); color: var(--on-variant); transition: background-color .2s, color .2s;
+}
+.item.go .lead { background: var(--primary-container); color: var(--on-primary-container); }
+.item.ok .lead { background: var(--ok-container); color: var(--on-ok-container); }
+.item.bad .lead { background: var(--err-container); color: var(--on-err-container); }
+.body { flex: 1; min-width: 0; }
+.name { font-size: 16px; line-height: 24px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meta { display: flex; justify-content: space-between; gap: 12px; color: var(--on-variant); font-size: 13px; line-height: 18px; }
+.status { text-align: right; white-space: nowrap; }
+.item.ok .status { color: var(--ok); font-weight: 500; }
+.item.bad .status { color: var(--err); font-weight: 500; }
+.progress { height: 4px; border-radius: 2px; margin-top: 8px; background: var(--surface-high); overflow: hidden; }
+.item.go .progress { background: var(--outline-variant); }
+.progress i { display: block; height: 100%; width: 0; border-radius: 2px; background: var(--primary); transition: width .15s linear, background-color .2s; }
+.item.ok .progress i { background: var(--ok); }
+.item.bad .progress i { background: var(--err); }
+
+.foot { margin: 20px 8px 0; color: var(--on-variant); font-size: 12px; line-height: 16px; text-align: center; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 </style>
 </head>
 <body>
 <main>
-  <h1>Send to {{NAME}}</h1>
-  <p class="sub">Pick photos or files. They appear on the shelf on that PC.</p>
-  <label class="pick">Choose files<input id="files" type="file" multiple></label>
-  <ul id="list"></ul>
-  <button id="again" type="button">Try the failed ones again</button>
-  <p id="note"></p>
+  <header>
+    <div class="logo" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 18c1.1 0 1.99-.9 1.99-2L22 6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z"/></svg></div>
+    <div>
+      <h1>Send to {{NAME}}</h1>
+      <p class="sub">Photos and files go straight to that PC.</p>
+    </div>
+  </header>
+
+  <div id="banner" class="banner" role="alert" hidden></div>
+
+  <label class="drop" id="drop">
+    <input id="files" class="sr" type="file" multiple>
+    <span class="drop-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></svg></span>
+    <span class="drop-title">Tap to pick files</span>
+    <span class="drop-sub">Photos, videos, documents, anything</span>
+    <span class="btn btn-primary"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>Choose files</span>
+  </label>
+
+  <section id="results" hidden>
+    <div class="head"><h2>Transfers</h2><span id="summary" class="chip"></span></div>
+    <ul id="list"></ul>
+    <button id="again" class="btn btn-tonal" type="button" hidden>Retry failed</button>
+  </section>
+
+  <p class="foot">Sent directly to your PC over this Wi-Fi. Nothing goes through the internet.</p>
 </main>
 <script>
 (function () {
+  var ICON = {
+    file: "M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z",
+    image: "M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z",
+    ok: "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z",
+    bad: "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z",
+    error: "M12 5.99L19.53 19H4.47L12 5.99M12 2L1 21h22L12 2zm1 14h-2v2h2v-2zm0-6h-2v4h2v-4z"
+  };
+  function svg(path) {
+    return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="' + path + '"/></svg>';
+  }
+
   var base = location.pathname.replace(/\/+$/, "");
   var input = document.getElementById("files");
+  var drop = document.getElementById("drop");
+  var results = document.getElementById("results");
   var list = document.getElementById("list");
   var again = document.getElementById("again");
-  var note = document.getElementById("note");
-  var queue = [], busy = false, failed = [];
+  var banner = document.getElementById("banner");
+  var summary = document.getElementById("summary");
+  var queue = [], busy = false, failed = [], jobs = [];
 
   function size(n) {
     if (n < 1024) return n + " B";
@@ -70,22 +213,63 @@ li { background: var(--card); border-radius: 14px; padding: 12px 14px; margin-bo
     return (n / 1073741824).toFixed(2) + " GB";
   }
 
-  function add(file) {
-    var li = document.createElement("li");
-    var row = document.createElement("div"); row.className = "row";
-    var name = document.createElement("span"); name.className = "name"; name.textContent = file.name;
-    var state = document.createElement("span"); state.className = "state"; state.textContent = size(file.size);
-    var bar = document.createElement("div"); bar.className = "bar";
-    var fill = document.createElement("i"); bar.appendChild(fill);
-    row.appendChild(name); row.appendChild(state); li.appendChild(row); li.appendChild(bar);
-    list.insertBefore(li, list.firstChild);
-    return { file: file, state: state, fill: fill };
+  function refresh() {
+    var sent = 0, bad = 0, waiting = 0, parts = [];
+    jobs.forEach(function (j) {
+      if (j.result === "ok") sent++; else if (j.result === "bad") bad++; else waiting++;
+    });
+    if (sent) parts.push(sent + " sent");
+    if (waiting) parts.push(waiting + " waiting");
+    if (bad) parts.push(bad + " failed");
+    summary.textContent = parts.join(" · ");
+    again.hidden = failed.length === 0;
   }
 
-  function finish(job, text, cls, ok) {
-    job.state.textContent = text; job.state.className = "state " + cls;
-    job.fill.style.width = ok ? "100%" : job.fill.style.width;
-    if (!ok) { failed.push(job); again.style.display = "block"; }
+  function mark(job, cls, status, icon) {
+    job.li.className = "item " + cls;
+    job.status.textContent = status;
+    if (icon) job.lead.innerHTML = svg(icon);
+  }
+
+  function add(file) {
+    var li = document.createElement("li");
+    li.className = "item";
+    var lead = document.createElement("span");
+    lead.className = "lead";
+    lead.innerHTML = svg((file.type || "").indexOf("image/") === 0 ? ICON.image : ICON.file);
+    var body = document.createElement("div");
+    body.className = "body";
+    var name = document.createElement("div");
+    name.className = "name";
+    name.textContent = file.name || "file";
+    var meta = document.createElement("div");
+    meta.className = "meta";
+    var info = document.createElement("span");
+    info.textContent = size(file.size);
+    var status = document.createElement("span");
+    status.className = "status";
+    status.textContent = "Waiting";
+    meta.appendChild(info); meta.appendChild(status);
+    var bar = document.createElement("div");
+    bar.className = "progress";
+    var fill = document.createElement("i");
+    bar.appendChild(fill);
+    body.appendChild(name); body.appendChild(meta); body.appendChild(bar);
+    li.appendChild(lead); li.appendChild(body);
+    list.insertBefore(li, list.firstChild);
+    results.hidden = false;
+    var job = { file: file, li: li, lead: lead, status: status, fill: fill, result: "" };
+    jobs.push(job);
+    refresh();
+    return job;
+  }
+
+  function finish(job, result, cls, text, icon) {
+    job.result = result;
+    if (result === "ok") job.fill.style.width = "100%";
+    if (result === "bad") failed.push(job);
+    mark(job, cls, text, icon);
+    refresh();
     next();
   }
 
@@ -96,23 +280,25 @@ li { background: var(--card); border-radius: 14px; padding: 12px 14px; margin-bo
       if (!e.lengthComputable) return;
       var pct = Math.round(e.loaded * 100 / e.total);
       job.fill.style.width = pct + "%";
-      job.state.textContent = pct + "%";
+      job.status.textContent = pct + "%";
     };
     xhr.onload = function () {
       if (xhr.status === 200) {
         var dup = /duplicate/.test(xhr.responseText || "");
-        finish(job, dup ? "Already on the shelf" : "Sent", "ok", true);
+        finish(job, "ok", "ok", dup ? "Already on the shelf" : "Sent", ICON.ok);
       } else if (xhr.status === 404) {
-        note.textContent = "This link has expired. Scan the QR code on the PC again.";
-        finish(job, "Link expired", "err", false);
+        banner.innerHTML = svg(ICON.error) + "<span>This link has expired. Scan the QR code on the PC again.</span>";
+        banner.hidden = false;
+        window.scrollTo(0, 0);
+        finish(job, "bad", "bad", "Link expired", ICON.bad);
       } else if (xhr.status === 503) {
-        finish(job, "PC is not receiving right now", "err", false);
+        finish(job, "bad", "bad", "PC is not receiving", ICON.bad);
       } else {
-        finish(job, "Failed", "err", false);
+        finish(job, "bad", "bad", "Failed", ICON.bad);
       }
     };
-    xhr.onerror = xhr.ontimeout = function () { finish(job, "Connection lost", "err", false); };
-    job.state.textContent = "0%";
+    xhr.onerror = xhr.ontimeout = function () { finish(job, "bad", "bad", "Connection lost", ICON.bad); };
+    mark(job, "go", "0%");
     xhr.send(job.file);
   }
 
@@ -132,9 +318,27 @@ li { background: var(--card); border-radius: 14px; padding: 12px 14px; margin-bo
     input.value = "";
   });
   again.addEventListener("click", function () {
-    var retry = failed; failed = []; again.style.display = "none";
-    retry.forEach(function (j) { j.fill.style.width = "0"; j.state.className = "state"; queue.push(j); });
+    var retry = failed; failed = [];
+    banner.hidden = true;
+    retry.forEach(function (j) {
+      j.result = ""; j.fill.style.width = "0";
+      mark(j, "", "Waiting");
+      j.lead.innerHTML = svg((j.file.type || "").indexOf("image/") === 0 ? ICON.image : ICON.file);
+      queue.push(j);
+    });
+    refresh();
     if (!busy) next();
+  });
+
+  // Also works from a laptop browser: drag files onto the card.
+  ["dragenter", "dragover"].forEach(function (t) {
+    drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.add("over"); });
+  });
+  ["dragleave", "drop"].forEach(function (t) {
+    drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.remove("over"); });
+  });
+  drop.addEventListener("drop", function (e) {
+    if (e.dataTransfer && e.dataTransfer.files.length) enqueue(e.dataTransfer.files);
   });
 })();
 </script>
