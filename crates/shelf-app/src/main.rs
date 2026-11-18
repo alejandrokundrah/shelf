@@ -207,6 +207,39 @@ fn tr(key: &'static str) -> &'static str {
         (Locale::French, "Send Clipboard") => "Envoyer le presse-papiers",
         (Locale::Spanish, "Send Clipboard") => "Enviar portapapeles",
         (Locale::German, "Send Clipboard") => "Zwischenablage senden",
+        (Locale::French, "Phone upload") => "Envoi depuis le téléphone",
+        (Locale::Spanish, "Phone upload") => "Envío desde el móvil",
+        (Locale::German, "Phone upload") => "Upload vom Handy",
+        (Locale::French, "Send from your phone") => "Envoyer depuis votre téléphone",
+        (Locale::Spanish, "Send from your phone") => "Enviar desde tu móvil",
+        (Locale::German, "Send from your phone") => "Vom Handy senden",
+        (Locale::French, "Scan with the phone camera. Both devices need the same Wi-Fi.") => {
+            "Scannez avec l'appareil photo du téléphone. Les deux appareils doivent être sur le même Wi-Fi."
+        }
+        (Locale::Spanish, "Scan with the phone camera. Both devices need the same Wi-Fi.") => {
+            "Escanea con la cámara del móvil. Ambos dispositivos deben estar en la misma red Wi-Fi."
+        }
+        (Locale::German, "Scan with the phone camera. Both devices need the same Wi-Fi.") => {
+            "Mit der Handykamera scannen. Beide Geräte müssen im selben WLAN sein."
+        }
+        (Locale::French, "Closes in") => "Se ferme dans",
+        (Locale::Spanish, "Closes in") => "Se cierra en",
+        (Locale::German, "Closes in") => "Schließt in",
+        (Locale::French, "Copy link") => "Copier le lien",
+        (Locale::Spanish, "Copy link") => "Copiar enlace",
+        (Locale::German, "Copy link") => "Link kopieren",
+        (Locale::French, "Stop") => "Arrêter",
+        (Locale::Spanish, "Stop") => "Detener",
+        (Locale::German, "Stop") => "Beenden",
+        (Locale::French, "Not encrypted. Use it on a network you trust.") => {
+            "Non chiffré. À utiliser sur un réseau de confiance."
+        }
+        (Locale::Spanish, "Not encrypted. Use it on a network you trust.") => {
+            "Sin cifrar. Úsalo en una red de confianza."
+        }
+        (Locale::German, "Not encrypted. Use it on a network you trust.") => {
+            "Nicht verschlüsselt. Nur in einem vertrauenswürdigen Netzwerk nutzen."
+        }
         (Locale::French, "Drop files") => "Déposer des fichiers",
         (Locale::Spanish, "Drop files") => "Suelta archivos",
         (Locale::German, "Drop files") => "Dateien ablegen",
@@ -1553,6 +1586,22 @@ fn glyph_copy(painter: &egui::Painter, c: Pos2, col: Color32) {
     );
 }
 
+/// A QR code: three finder squares and a few data modules.
+fn glyph_qr(painter: &egui::Painter, c: Pos2, col: Color32) {
+    let s = Stroke::new(1.7_f32, col);
+    for (x, y) in [(-8.5_f32, -8.5_f32), (1.5, -8.5), (-8.5, 1.5)] {
+        painter.rect_stroke(Rect::from_min_size(c + vec2(x, y), vec2(7.0, 7.0)), 1.5, s);
+        painter.rect_filled(
+            Rect::from_center_size(c + vec2(x + 3.5, y + 3.5), vec2(2.4, 2.4)),
+            0.0,
+            col,
+        );
+    }
+    for (x, y) in [(2.0_f32, 2.0_f32), (6.2, 2.0), (2.0, 6.2), (6.2, 6.2)] {
+        painter.rect_filled(Rect::from_min_size(c + vec2(x, y), vec2(2.3, 2.3)), 0.0, col);
+    }
+}
+
 /// Lucide "airplay": a screen with an open bottom and a triangle beneath it.
 fn glyph_airplay(painter: &egui::Painter, c: Pos2, col: Color32) {
     let k = 0.92_f32;
@@ -2056,6 +2105,12 @@ struct PairDialog {
     error: Option<String>,
 }
 
+/// The phone-upload page that is currently open, shown as a QR code.
+struct PhoneUpload {
+    url: String,
+    until: Instant,
+}
+
 struct TransferStatus {
     name: String,
     peer: String,
@@ -2201,6 +2256,8 @@ struct IncomingRequest {
 
 enum Action {
     SendClipboard,
+    /// Opens or closes the QR code a phone can scan to send files to this shelf.
+    TogglePhoneUpload,
     StartPairing,
     CancelPairing,
     OpenPair(NearbyDevice),
@@ -2287,6 +2344,7 @@ struct ShelfApp {
     assignment_instructions_input: String,
     assignment_files: Vec<PathBuf>,
     my_code: Option<(String, Instant)>,
+    phone_upload: Option<PhoneUpload>,
     pair_dialog: Option<PairDialog>,
 
     auto_copy: bool,
@@ -2333,19 +2391,25 @@ fn audit_clock() -> String {
 
 fn room_qr(ui: &mut egui::Ui, room: &Room) {
     let payload = format!("shelf://room/{}/{}", room.id, room.invite_code);
+    draw_qr(ui, &payload, 132.0, 0);
+}
+
+/// Draws `payload` as a black-on-white QR code `side` points wide. `quiet` is the blank
+/// border in modules; phone cameras need about 2 to read a code reliably.
+fn draw_qr(ui: &mut egui::Ui, payload: &str, side: f32, quiet: usize) {
     let Ok(code) = qrcode::QrCode::new(payload.as_bytes()) else {
         return;
     };
     let modules = code.width();
-    let side = 132.0;
     let (rect, _) = ui.allocate_exact_size(vec2(side, side), egui::Sense::hover());
     ui.painter().rect_filled(rect, 8.0, Color32::WHITE);
     let colors = code.to_colors();
-    let cell = side / modules as f32;
+    let cell = side / (modules + 2 * quiet) as f32;
+    let origin = rect.min + vec2(quiet as f32 * cell, quiet as f32 * cell);
     for y in 0..modules {
         for x in 0..modules {
             if colors[y * modules + x] == qrcode::Color::Dark {
-                let min = rect.min + vec2(x as f32 * cell, y as f32 * cell);
+                let min = origin + vec2(x as f32 * cell, y as f32 * cell);
                 ui.painter().rect_filled(
                     Rect::from_min_size(min, vec2(cell + 0.5, cell + 0.5)),
                     0.0,
@@ -2421,6 +2485,7 @@ impl ShelfApp {
             assignment_instructions_input: String::new(),
             assignment_files: Vec::new(),
             my_code: None,
+            phone_upload: None,
             pair_dialog: None,
             auto_copy: settings.auto_copy,
             receiving_paused: false,
@@ -2612,6 +2677,23 @@ impl ShelfApp {
                     self.my_code = Some((code, Instant::now() + Duration::from_secs(seconds)));
                 }
                 Event::PairingCleared => self.my_code = None,
+                Event::WebDropReady { url, seconds } => {
+                    self.record_audit("Phone upload opened");
+                    self.phone_upload = Some(PhoneUpload {
+                        url,
+                        until: Instant::now() + Duration::from_secs(seconds),
+                    });
+                    self.open_for(4);
+                }
+                Event::WebDropStopped => {
+                    if self.phone_upload.take().is_some() {
+                        self.record_audit("Phone upload closed");
+                    }
+                }
+                Event::WebDropDuplicate { name, from } => {
+                    self.finish_download(&name, &from);
+                    self.set_status(format!("{name} is already on the shelf"));
+                }
                 Event::PairingResult(res) => match res {
                     Ok(name) => {
                         self.record_audit(format!("Paired with {name}"));
@@ -2963,6 +3045,14 @@ impl eframe::App for ShelfApp {
                 self.my_code = None;
             }
         }
+        if let Some(upload) = &self.phone_upload {
+            if Instant::now() > upload.until {
+                self.phone_upload = None;
+            } else {
+                // Keep the countdown ticking.
+                ctx.request_repaint_after(Duration::from_millis(500));
+            }
+        }
 
         let hovering_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
         let pointer_inside = ctx.input(|i| i.pointer.hover_pos().is_some());
@@ -2997,6 +3087,7 @@ impl eframe::App for ShelfApp {
                 || self.last_active.elapsed() < Duration::from_millis(1200)
                 || Instant::now() < self.open_until
                 || self.my_code.is_some()
+                || self.phone_upload.is_some()
                 || self.pair_dialog.is_some());
         self.apply_geometry(ctx, expanded);
 
@@ -3161,6 +3252,43 @@ impl eframe::App for ShelfApp {
                                 self.devices_focus = true;
                             }
                         });
+                        if let Some(upload) = &self.phone_upload {
+                            let left = upload.until.saturating_duration_since(Instant::now()).as_secs();
+                            let url = upload.url.clone();
+                            card(ui, |ui| {
+                                ui.vertical_centered(|ui| {
+                                    ui.label(semibold(tr("Send from your phone"), 14.0).color(p.text));
+                                    ui.label(
+                                        RichText::new(tr("Scan with the phone camera. Both devices need the same Wi-Fi."))
+                                            .size(12.0)
+                                            .color(p.text2),
+                                    );
+                                    ui.add_space(4.0);
+                                    draw_qr(ui, &url, 176.0, 2);
+                                    ui.add_space(4.0);
+                                    ui.label(RichText::new(&url).size(10.5).color(p.text3));
+                                    ui.label(
+                                        RichText::new(format!("{} {}:{:02}", tr("Closes in"), left / 60, left % 60))
+                                            .size(11.5)
+                                            .color(p.text3),
+                                    );
+                                    ui.horizontal(|ui| {
+                                        if capsule(ui, tr("Copy link"), Look::Glass, 28.0, None, true).clicked() {
+                                            let _ = clip::copy_text(&url);
+                                            self.status = "Link copied".to_string();
+                                        }
+                                        if capsule(ui, tr("Stop"), Look::Glass, 28.0, None, true).clicked() {
+                                            actions.push(Action::TogglePhoneUpload);
+                                        }
+                                    });
+                                    ui.label(
+                                        RichText::new(tr("Not encrypted. Use it on a network you trust."))
+                                            .size(11.0)
+                                            .color(p.text3),
+                                    );
+                                });
+                            });
+                        }
                         transfers_summary(ui, &self.transfers);
                         transfer_cards(ui, &self.transfers, &mut actions);
 
@@ -3174,11 +3302,11 @@ impl eframe::App for ShelfApp {
                             {
                                 self.show_all_settings = !self.show_all_settings;
                             }
-                            if quick_circle(ui, circle, glyph_copy, false)
-                                .on_hover_text(tr("Send Clipboard"))
+                            if quick_circle(ui, circle, glyph_qr, self.phone_upload.is_some())
+                                .on_hover_text(tr("Phone upload"))
                                 .clicked()
                             {
-                                actions.push(Action::SendClipboard);
+                                actions.push(Action::TogglePhoneUpload);
                             }
                             if quick_circle(ui, circle, glyph_pause, self.receiving_paused)
                                 .on_hover_text("Pause receiving")
@@ -4376,6 +4504,13 @@ impl eframe::App for ShelfApp {
         for a in actions {
             match a {
                 Action::SendClipboard => self.send_clipboard(),
+                Action::TogglePhoneUpload => {
+                    if self.phone_upload.take().is_some() {
+                        self.handle.send(Command::StopWebDrop);
+                    } else {
+                        self.handle.send(Command::StartWebDrop);
+                    }
+                }
                 Action::StartPairing => self.handle.send(Command::StartPairing),
                 Action::CancelPairing => {
                     self.handle.send(Command::CancelPairing);

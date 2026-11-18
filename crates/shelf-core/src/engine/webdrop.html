@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Send to Shelf</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #f2f4f9; --card: #ffffff; --text: #14182a; --muted: #5d6580;
+  --accent: #3478f6; --on-accent: #ffffff; --good: #1f9d55; --bad: #d93a2f; --track: #dfe4f0;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e1630; --card: #1a2750; --text: #f2f5ff; --muted: #a3b0d4;
+    --accent: #5b9bff; --on-accent: #0b1330; --good: #3ddc84; --bad: #ff7a70; --track: #2c3a68;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 20px 16px 40px; background: var(--bg); color: var(--text);
+  font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+main { max-width: 480px; margin: 0 auto; }
+h1 { font-size: 22px; margin: 8px 0 4px; }
+p.sub { margin: 0 0 20px; color: var(--muted); font-size: 14px; }
+.pick {
+  display: block; width: 100%; padding: 18px; border-radius: 16px; text-align: center;
+  background: var(--accent); color: var(--on-accent); font-weight: 600; font-size: 18px;
+}
+.pick input { display: none; }
+ul { list-style: none; padding: 0; margin: 20px 0 0; }
+li { background: var(--card); border-radius: 14px; padding: 12px 14px; margin-bottom: 10px; }
+.row { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.state { font-size: 13px; color: var(--muted); white-space: nowrap; }
+.state.ok { color: var(--good); } .state.err { color: var(--bad); }
+.bar { height: 6px; border-radius: 3px; background: var(--track); margin-top: 8px; overflow: hidden; }
+.bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .15s; }
+#again {
+  display: none; margin-top: 8px; width: 100%; padding: 14px; border-radius: 14px; border: 0;
+  background: var(--card); color: var(--text); font: inherit; font-weight: 600;
+}
+#note { margin-top: 18px; color: var(--muted); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Send to {{NAME}}</h1>
+  <p class="sub">Pick photos or files. They appear on the shelf on that PC.</p>
+  <label class="pick">Choose files<input id="files" type="file" multiple></label>
+  <ul id="list"></ul>
+  <button id="again" type="button">Try the failed ones again</button>
+  <p id="note"></p>
+</main>
+<script>
+(function () {
+  var base = location.pathname.replace(/\/+$/, "");
+  var input = document.getElementById("files");
+  var list = document.getElementById("list");
+  var again = document.getElementById("again");
+  var note = document.getElementById("note");
+  var queue = [], busy = false, failed = [];
+
+  function size(n) {
+    if (n < 1024) return n + " B";
+    if (n < 1048576) return (n / 1024).toFixed(0) + " KB";
+    if (n < 1073741824) return (n / 1048576).toFixed(1) + " MB";
+    return (n / 1073741824).toFixed(2) + " GB";
+  }
+
+  function add(file) {
+    var li = document.createElement("li");
+    var row = document.createElement("div"); row.className = "row";
+    var name = document.createElement("span"); name.className = "name"; name.textContent = file.name;
+    var state = document.createElement("span"); state.className = "state"; state.textContent = size(file.size);
+    var bar = document.createElement("div"); bar.className = "bar";
+    var fill = document.createElement("i"); bar.appendChild(fill);
+    row.appendChild(name); row.appendChild(state); li.appendChild(row); li.appendChild(bar);
+    list.insertBefore(li, list.firstChild);
+    return { file: file, state: state, fill: fill };
+  }
+
+  function finish(job, text, cls, ok) {
+    job.state.textContent = text; job.state.className = "state " + cls;
+    job.fill.style.width = ok ? "100%" : job.fill.style.width;
+    if (!ok) { failed.push(job); again.style.display = "block"; }
+    next();
+  }
+
+  function send(job) {
+    var xhr = new XMLHttpRequest();
+    xhr.open("PUT", base + "/" + encodeURIComponent(job.file.name || "file"));
+    xhr.upload.onprogress = function (e) {
+      if (!e.lengthComputable) return;
+      var pct = Math.round(e.loaded * 100 / e.total);
+      job.fill.style.width = pct + "%";
+      job.state.textContent = pct + "%";
+    };
+    xhr.onload = function () {
+      if (xhr.status === 200) {
+        var dup = /duplicate/.test(xhr.responseText || "");
+        finish(job, dup ? "Already on the shelf" : "Sent", "ok", true);
+      } else if (xhr.status === 404) {
+        note.textContent = "This link has expired. Scan the QR code on the PC again.";
+        finish(job, "Link expired", "err", false);
+      } else if (xhr.status === 503) {
+        finish(job, "PC is not receiving right now", "err", false);
+      } else {
+        finish(job, "Failed", "err", false);
+      }
+    };
+    xhr.onerror = xhr.ontimeout = function () { finish(job, "Connection lost", "err", false); };
+    job.state.textContent = "0%";
+    xhr.send(job.file);
+  }
+
+  function next() {
+    var job = queue.shift();
+    if (!job) { busy = false; return; }
+    busy = true; send(job);
+  }
+
+  function enqueue(files) {
+    for (var i = 0; i < files.length; i++) queue.push(add(files[i]));
+    if (!busy) next();
+  }
+
+  input.addEventListener("change", function () {
+    if (input.files && input.files.length) { enqueue(input.files); }
+    input.value = "";
+  });
+  again.addEventListener("click", function () {
+    var retry = failed; failed = []; again.style.display = "none";
+    retry.forEach(function (j) { j.fill.style.width = "0"; j.state.className = "state"; queue.push(j); });
+    if (!busy) next();
+  });
+})();
+</script>
+</body>
+</html>
