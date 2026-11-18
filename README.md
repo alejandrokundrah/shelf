@@ -3,8 +3,8 @@
 ![Shelf app icon](crates/shelf-app/assets/icon.png)
 
 Shelf is a Windows edge-of-screen sharing tool for nearby PCs. Send files,
-images, clipboard text, and classroom or team work over an authenticated local
-network connection.
+folders, images, clipboard text, and classroom or team work over an authenticated
+local network connection, and swap files with a phone through a QR code.
 
 ## Features
 
@@ -97,7 +97,8 @@ offer it (computer browsers also accept a folder dragged onto the page); a brows
 folder picking sends the files it is given as plain files. Empty folders are not sent.
 
 Uploads show progress in the transfer list, can be cancelled from their row, honor
-**Pause receiving**, and skip files that are already on the shelf. Received photos get the
+**Pause receiving** (which only affects what the phone sends, not what you share with it),
+and skip files that are already on the shelf. Received photos get the
 usual image preview. Click the button again, or **Stop**, to close the page; it also closes
 by itself after 10 minutes. **Copy link** is there if the phone cannot scan.
 
@@ -190,8 +191,9 @@ last known address of paired members when discovery briefly goes quiet.
 - Transfers use mutually authenticated Noise XX:
   X25519, ChaChaPoly, and BLAKE2s.
 - Unpaired devices are rejected. The one deliberate exception is **Send from your phone**,
-  which is off until you open it, is upload-only, uses an unguessable one-time link, closes
-  after 10 minutes, and is not encrypted (see above).
+  which is off until you open it, uses an unguessable one-time link, closes after 10 minutes,
+  and is not encrypted (see above). The phone can send files, folders and text to the PC and
+  can download only the items you explicitly add for it; it cannot browse the PC or the shelf.
 - The installer opens the Windows Firewall only for PRIVATE networks.
 - Room traffic uses the same authenticated LAN channel.
 - The device key in %LOCALAPPDATA%\\Shelf\\config.json is encrypted with Windows
@@ -225,7 +227,8 @@ The installer output is written to installer\\Output\\Shelf-Setup.exe.
 ## Project layout
 
 ~~~text
-crates/shelf-core/       Discovery, pairing, encryption, transfer, rooms
+crates/shelf-core/       Discovery, pairing, encryption, transfer, rooms, stash,
+                         and the phone page (src/engine/webdrop.rs and webdrop.html)
 crates/shelf-app/        Windows edge UI and clipboard integration
 crates/shelf-app/assets/ Application icon
 installer/               Inno Setup configuration and installer icon
