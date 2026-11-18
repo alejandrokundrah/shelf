@@ -1751,7 +1751,9 @@ const RESERVED: [&str; 22] = [
     "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ];
 
-fn unique_inbox_path(inbox: &Path, name: &str) -> PathBuf {
+/// Reduces a name suggested by another device to one safe path component: no directory part,
+/// no characters Windows rejects, no reserved device names.
+fn clean_file_name(name: &str) -> String {
     let base = Path::new(name)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -1774,7 +1776,11 @@ fn unique_inbox_path(inbox: &Path, name: &str) -> PathBuf {
     if RESERVED.contains(&stem_upper.as_str()) {
         clean = format!("_{clean}");
     }
+    clean
+}
 
+fn unique_inbox_path(inbox: &Path, name: &str) -> PathBuf {
+    let clean = clean_file_name(name);
     let first = inbox.join(&clean);
     if !first.exists() {
         return first;

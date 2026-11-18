@@ -11,20 +11,29 @@
 //! * Plain HTTP on the local network, so it is NOT encrypted: anyone who can watch the traffic
 //!   on that network could read the token and the files. The UI says so.
 //! * Upload only. Nothing on the shelf can be read back through this endpoint.
+//!
+//! What a phone (or any browser) can send:
+//!
+//! * `PUT /<token>/<name>`: one file.
+//! * `PUT /<token>/folder/<batch>/<root>/<sub>/<file>`, then `POST /<token>/folder/<batch>/done`:
+//!   a whole folder. Files are staged in a hidden directory and only appear in the inbox, as one
+//!   folder item, when the phone says it is done, so a folder never shows up half-finished.
+//! * `POST /<token>/text`: a text note, which arrives like clipboard text from a paired PC.
 
 use super::{
-    emit_progress, is_cancelled, clear_cancelled, unique_inbox_path, Event, ReceivedItem, Shared,
-    TransferDirection,
+    clean_file_name, clear_cancelled, emit_progress, is_cancelled, unique_inbox_path, Event,
+    ReceivedItem, Shared, TransferDirection,
 };
-use crate::protocol::{ItemKind, MAX_FILE_BYTES};
+use crate::protocol::{ItemKind, MAX_FILE_BYTES, MAX_TEXT_BYTES};
 use crate::store::inbox_dir;
 use anyhow::{anyhow, bail, Result};
 use rand::Rng;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -41,6 +50,12 @@ const MAX_HEAD_BYTES: usize = 16 * 1024;
 const HEAD_TIMEOUT: Duration = Duration::from_secs(10);
 const BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_NAME_CHARS: usize = 200;
+/// Folders being uploaded at the same time in one session.
+const MAX_BATCHES: usize = 32;
+/// Deepest folder nesting accepted, root included.
+const MAX_FOLDER_DEPTH: usize = 32;
+/// Most files accepted in one folder upload.
+const MAX_FOLDER_FILES: u64 = 20_000;
 const PAGE: &str = include_str!("webdrop.html");
 
 /// The running session, kept in `Shared` so it can be stopped from anywhere.
@@ -48,6 +63,15 @@ pub(super) struct WebDropSession {
     id: u64,
     stop: Arc<Notify>,
 }
+
+/// A folder that is still being uploaded. The files themselves live in a hidden staging
+/// directory inside the inbox until the phone finishes the batch.
+struct Batch {
+    root: String,
+    files: u64,
+}
+
+type Batches = Arc<Mutex<HashMap<String, Batch>>>;
 
 // ---------------------------------------------------------------- session control
 
@@ -111,6 +135,7 @@ async fn serve(
     ttl: Duration,
 ) {
     let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let batches: Batches = Arc::new(Mutex::new(HashMap::new()));
     let expiry = tokio::time::sleep(ttl);
     tokio::pin!(expiry);
     loop {
@@ -124,10 +149,10 @@ async fn serve(
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
                     let Ok(permit) = slots.clone().try_acquire_owned() else { continue };
-                    let (shared, token) = (shared.clone(), token.clone());
+                    let (shared, token, batches) = (shared.clone(), token.clone(), batches.clone());
                     tokio::spawn(async move {
                         let _permit = permit;
-                        let _ = handle(&shared, stream, &token).await;
+                        let _ = handle(&shared, stream, &token, &batches).await;
                     });
                 }
                 Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
@@ -153,9 +178,18 @@ struct Request {
     content_length: Option<u64>,
     chunked: bool,
     expect_continue: bool,
+    /// Folder uploads: bytes in the whole folder, and bytes of the files already finished.
+    /// Only used to draw one steady progress bar for the folder.
+    folder_total: Option<u64>,
+    folder_done: Option<u64>,
 }
 
-async fn handle(shared: &Arc<Shared>, mut stream: TcpStream, token: &str) -> Result<()> {
+async fn handle(
+    shared: &Arc<Shared>,
+    mut stream: TcpStream,
+    token: &str,
+    batches: &Batches,
+) -> Result<()> {
     let (head, leftover) = timeout(HEAD_TIMEOUT, read_head(&mut stream)).await??;
     let Some(request) = parse_head(&head) else {
         return respond(&mut stream, 400, "text/plain", b"Bad request").await;
@@ -172,6 +206,13 @@ async fn handle(shared: &Arc<Shared>, mut stream: TcpStream, token: &str) -> Res
             let page = PAGE.replace("{{NAME}}", &html_escape(&name));
             respond(&mut stream, 200, "text/html; charset=utf-8", page.as_bytes()).await
         }
+        ("PUT", path) if path.starts_with("folder/") => {
+            upload_folder_file(shared, batches, &mut stream, &request, &path[7..], leftover).await
+        }
+        ("POST", path) if path.starts_with("folder/") => {
+            finish_folder(shared, batches, &mut stream, &path[7..]).await
+        }
+        ("POST", "text") => upload_text(shared, &mut stream, &request, leftover).await,
         ("PUT", name) if !name.is_empty() => {
             upload(shared, &mut stream, &request, name, leftover).await
         }
@@ -215,6 +256,8 @@ fn parse_head(head: &[u8]) -> Option<Request> {
     let mut content_length: Option<u64> = None;
     let mut chunked = false;
     let mut expect_continue = false;
+    let mut folder_total: Option<u64> = None;
+    let mut folder_done: Option<u64> = None;
     for line in lines {
         let (key, value) = line.split_once(':')?;
         let value = value.trim();
@@ -229,6 +272,8 @@ fn parse_head(head: &[u8]) -> Option<Request> {
             }
             "transfer-encoding" => chunked = value.to_ascii_lowercase().contains("chunked"),
             "expect" => expect_continue = value.eq_ignore_ascii_case("100-continue"),
+            "x-shelf-total" => folder_total = value.parse().ok(),
+            "x-shelf-done" => folder_done = value.parse().ok(),
             _ => {}
         }
     }
@@ -238,6 +283,8 @@ fn parse_head(head: &[u8]) -> Option<Request> {
         content_length,
         chunked,
         expect_continue,
+        folder_total,
+        folder_done,
     })
 }
 
@@ -306,7 +353,7 @@ async fn upload(
     let partial = base.join(format!(".shelf-web-{:016x}.part", rand::random::<u64>()));
 
     clear_cancelled(shared, TransferDirection::Download, &name, PHONE);
-    let received = receive_body(shared, stream, leftover, length, &partial, &name).await;
+    let received = receive_body(shared, stream, leftover, length, &partial, &name, 0, length).await;
     let hash = match received {
         Ok(hash) => hash,
         Err(error) => {
@@ -347,6 +394,10 @@ async fn upload(
 }
 
 /// Streams exactly `length` body bytes to `partial` and returns their SHA-256.
+///
+/// Progress is reported as `base + done` out of `total`, so one file of a folder moves the
+/// folder's bar instead of getting a row of its own. A single file passes `0` and its length.
+#[allow(clippy::too_many_arguments)]
 async fn receive_body(
     shared: &Arc<Shared>,
     stream: &mut TcpStream,
@@ -354,11 +405,17 @@ async fn receive_body(
     length: u64,
     partial: &Path,
     name: &str,
+    base: u64,
+    total: u64,
 ) -> Result<[u8; 32]> {
     let mut file = tokio::fs::File::create(partial).await?;
     let mut hasher = Sha256::new();
     let mut done: u64 = 0;
-    let mut last_percent = 0u8;
+    let mut last_percent = base
+        .saturating_mul(100)
+        .checked_div(total)
+        .unwrap_or(0)
+        .min(100) as u8;
 
     // Body bytes that arrived together with the headers, capped at the declared length.
     let first = &leftover[..(leftover.len() as u64).min(length) as usize];
@@ -383,9 +440,9 @@ async fn receive_body(
         file.write_all(&buf[..n]).await?;
         hasher.update(&buf[..n]);
         done += n as u64;
-        emit_progress(shared, TransferDirection::Download, name, PHONE, done, length, &mut last_percent);
+        emit_progress(shared, TransferDirection::Download, name, PHONE, base + done, total, &mut last_percent);
     }
-    emit_progress(shared, TransferDirection::Download, name, PHONE, length, length, &mut last_percent);
+    emit_progress(shared, TransferDirection::Download, name, PHONE, base + length, total, &mut last_percent);
     file.flush().await?;
     Ok(hasher.finalize().into())
 }
@@ -402,6 +459,245 @@ fn kind_for(path: &Path) -> ItemKind {
     } else {
         ItemKind::File
     }
+}
+
+// ---------------------------------------------------------------- folders
+
+/// Splits the part of the URL after `folder/` into the batch id and the folder-relative
+/// path segments (root folder first), each one decoded and made safe as a single file name.
+fn parse_folder_path(rest: &str) -> Option<(String, Vec<String>)> {
+    let (batch, rel) = rest.split_once('/')?;
+    let valid_batch = (8..=64).contains(&batch.len()) && batch.bytes().all(|b| b.is_ascii_alphanumeric());
+    if !valid_batch {
+        return None;
+    }
+    let raw: Vec<&str> = rel.split('/').collect();
+    // A file needs its root folder in front of it, and an empty segment is never legitimate.
+    if raw.len() < 2 || raw.len() > MAX_FOLDER_DEPTH || raw.iter().any(|segment| segment.is_empty()) {
+        return None;
+    }
+    let segments = raw.iter().map(|segment| clean_file_name(&decode_name(segment))).collect();
+    Some((batch.to_string(), segments))
+}
+
+fn staging_dir(base: &Path, batch: &str) -> PathBuf {
+    base.join(format!(".shelf-web-dir-{batch}"))
+}
+
+async fn receive_dir(shared: &Arc<Shared>) -> Result<PathBuf> {
+    let base = shared
+        .config
+        .lock()
+        .unwrap()
+        .receive_dir
+        .clone()
+        .unwrap_or_else(inbox_dir);
+    tokio::fs::create_dir_all(&base).await?;
+    Ok(base)
+}
+
+async fn upload_folder_file(
+    shared: &Arc<Shared>,
+    batches: &Batches,
+    stream: &mut TcpStream,
+    request: &Request,
+    rest: &str,
+    leftover: Vec<u8>,
+) -> Result<()> {
+    if shared.receiving_paused.load(Ordering::SeqCst) {
+        return respond(stream, 503, "text/plain", b"Receiving is paused").await;
+    }
+    let Some((batch, segments)) = parse_folder_path(rest) else {
+        return respond(stream, 400, "text/plain", b"Bad folder path").await;
+    };
+    let length = match (request.content_length, request.chunked) {
+        (Some(length), false) => length,
+        _ => return respond(stream, 411, "text/plain", b"Content-Length required").await,
+    };
+    if length > MAX_FILE_BYTES {
+        return respond(stream, 413, "text/plain", b"File too large").await;
+    }
+
+    let root = segments[0].clone();
+    // Register (or look up) the batch before reading any body. The lock is released before
+    // anything is awaited.
+    let registered: Result<bool, (u16, &'static [u8])> = {
+        let mut guard = batches.lock().unwrap();
+        let known = guard.get(&batch).map(|existing| (existing.root.clone(), existing.files));
+        match known {
+            Some((existing_root, _)) if existing_root != root => {
+                Err((400, &b"Folder name changed"[..]))
+            }
+            Some((_, files)) if files >= MAX_FOLDER_FILES => Err((413, &b"Too many files"[..])),
+            Some(_) => Ok(false),
+            None if guard.len() >= MAX_BATCHES => {
+                Err((503, &b"Too many folders at once"[..]))
+            }
+            None => {
+                guard.insert(batch.clone(), Batch { root: root.clone(), files: 0 });
+                Ok(true)
+            }
+        }
+    };
+    let first_file = match registered {
+        Ok(first) => first,
+        Err((status, message)) => return respond(stream, status, "text/plain", message).await,
+    };
+
+    if request.expect_continue {
+        stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").await?;
+    }
+
+    let base = receive_dir(shared).await?;
+    let staging = staging_dir(&base, &batch);
+    let mut target = staging.clone();
+    for segment in &segments[1..] {
+        target.push(segment);
+    }
+    let parent = target.parent().unwrap_or(&staging).to_path_buf();
+    tokio::fs::create_dir_all(&parent).await?;
+    let partial = parent.join(format!(".shelf-web-{:016x}.part", rand::random::<u64>()));
+
+    let base_done = request.folder_done.unwrap_or(0);
+    let total = request.folder_total.unwrap_or(length).max(base_done + length).max(1);
+    if first_file || base_done == 0 {
+        clear_cancelled(shared, TransferDirection::Download, &root, PHONE);
+    }
+    let received =
+        receive_body(shared, stream, leftover, length, &partial, &root, base_done, total).await;
+    if let Err(error) = received {
+        let _ = tokio::fs::remove_file(&partial).await;
+        clear_cancelled(shared, TransferDirection::Download, &root, PHONE);
+        shared.emit(Event::Error(format!("Phone upload of {root} failed: {error}")));
+        return respond(stream, 400, "text/plain", b"Upload failed").await;
+    }
+    if let Err(error) = tokio::fs::rename(&partial, &target).await {
+        let _ = tokio::fs::remove_file(&partial).await;
+        shared.emit(Event::Error(format!("Could not save a file of {root}: {error}")));
+        return respond(stream, 500, "text/plain", b"Could not save the file").await;
+    }
+    if let Some(entry) = batches.lock().unwrap().get_mut(&batch) {
+        entry.files += 1;
+    }
+    respond(stream, 200, "application/json", br#"{"status":"ok"}"#).await
+}
+
+/// Counts the files in a staged folder and their total size.
+fn folder_stats(dir: &Path) -> (u64, u64) {
+    let mut files = 0;
+    let mut bytes = 0;
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(current) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&current) else { continue };
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.is_dir() {
+                pending.push(entry.path());
+            } else if !entry.file_name().to_string_lossy().ends_with(".part") {
+                files += 1;
+                bytes += meta.len();
+            }
+        }
+    }
+    (files, bytes)
+}
+
+async fn finish_folder(
+    shared: &Arc<Shared>,
+    batches: &Batches,
+    stream: &mut TcpStream,
+    rest: &str,
+) -> Result<()> {
+    let Some(batch) = rest.strip_suffix("/done") else {
+        return respond(stream, 404, "text/plain", b"Not found").await;
+    };
+    let Some(entry) = batches.lock().unwrap().remove(batch) else {
+        return respond(stream, 404, "text/plain", b"Unknown folder").await;
+    };
+    let base = receive_dir(shared).await?;
+    let staging = staging_dir(&base, batch);
+    let stats_dir = staging.clone();
+    let (files, bytes) = tokio::task::spawn_blocking(move || folder_stats(&stats_dir)).await?;
+    if files == 0 {
+        let _ = tokio::fs::remove_dir_all(&staging).await;
+        return respond(stream, 400, "text/plain", b"Nothing was uploaded").await;
+    }
+    let path = unique_inbox_path(&base, &entry.root);
+    if let Err(error) = tokio::fs::rename(&staging, &path).await {
+        let _ = tokio::fs::remove_dir_all(&staging).await;
+        shared.emit(Event::Error(format!("Could not save folder {}: {error}", entry.root)));
+        return respond(stream, 500, "text/plain", b"Could not save the folder").await;
+    }
+    clear_cancelled(shared, TransferDirection::Download, &entry.root, PHONE);
+    shared.emit(Event::Received(ReceivedItem {
+        id: rand::random::<u64>(),
+        room_id: None,
+        kind: ItemKind::File,
+        name: entry.root,
+        from: PHONE.to_string(),
+        size: bytes,
+        path: Some(path),
+        text: None,
+    }));
+    respond(stream, 200, "application/json", br#"{"status":"ok"}"#).await
+}
+
+// ---------------------------------------------------------------- text
+
+async fn upload_text(
+    shared: &Arc<Shared>,
+    stream: &mut TcpStream,
+    request: &Request,
+    leftover: Vec<u8>,
+) -> Result<()> {
+    if shared.receiving_paused.load(Ordering::SeqCst) {
+        return respond(stream, 503, "text/plain", b"Receiving is paused").await;
+    }
+    let length = match (request.content_length, request.chunked) {
+        (Some(length), false) => length,
+        _ => return respond(stream, 411, "text/plain", b"Content-Length required").await,
+    };
+    if length > MAX_TEXT_BYTES {
+        return respond(stream, 413, "text/plain", b"Text too large").await;
+    }
+    if request.expect_continue {
+        stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").await?;
+    }
+    let mut body = leftover;
+    body.truncate(length as usize);
+    while (body.len() as u64) < length {
+        let mut chunk = vec![0u8; ((length - body.len() as u64).min(64 * 1024)) as usize];
+        let n = match timeout(BODY_IDLE_TIMEOUT, stream.read(&mut chunk)).await {
+            Ok(Ok(n)) if n > 0 => n,
+            _ => return respond(stream, 400, "text/plain", b"Upload failed").await,
+        };
+        body.extend_from_slice(&chunk[..n]);
+    }
+    let Ok(text) = String::from_utf8(body) else {
+        return respond(stream, 400, "text/plain", b"Text must be UTF-8").await;
+    };
+    if text.trim().is_empty() {
+        return respond(stream, 400, "text/plain", b"Nothing to send").await;
+    }
+    let hash: [u8; 32] = Sha256::digest(text.as_bytes()).into();
+    if !shared.received_hashes.lock().unwrap().insert(hash) {
+        shared.emit(Event::WebDropDuplicate {
+            name: "Text".to_string(),
+            from: PHONE.to_string(),
+        });
+        return respond(stream, 200, "application/json", br#"{"status":"duplicate"}"#).await;
+    }
+    shared.emit(Event::Received(ReceivedItem {
+        id: rand::random::<u64>(),
+        room_id: None,
+        kind: ItemKind::Text,
+        name: "Text".to_string(),
+        from: PHONE.to_string(),
+        size: text.len() as u64,
+        path: None,
+        text: Some(text),
+    }));
+    respond(stream, 200, "application/json", br#"{"status":"ok"}"#).await
 }
 
 // ---------------------------------------------------------------- helpers
@@ -825,6 +1121,205 @@ mod tests {
         assert!(shared.webdrop.lock().unwrap().is_none());
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(TcpStream::connect(addr).await.is_err());
+    }
+
+    async fn post(addr: SocketAddr, path: &str, body: &[u8]) -> (u16, String) {
+        let head = format!(
+            "POST /{TOKEN}/{path} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        raw(addr, &head, body).await
+    }
+
+    fn walk(dir: &Path) -> Vec<String> {
+        fn visit(root: &Path, dir: &Path, out: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    visit(root, &path, out);
+                } else {
+                    out.push(path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        visit(dir, dir, &mut out);
+        out.sort();
+        out
+    }
+
+    const BATCH: &str = "abcdef0123456789";
+
+    #[tokio::test]
+    async fn a_folder_arrives_as_one_item_with_its_structure() {
+        let tmp = TempDir::new();
+        let (shared, rx) = test_shared(&tmp.0);
+        let (addr, _stop) = serve_for_test(&shared, Duration::from_secs(60)).await;
+
+        let files: [(&str, &[u8]); 3] = [
+            ("Trip%20photos/a.txt", b"alpha"),
+            ("Trip%20photos/day%201/b.txt", b"bravo!"),
+            ("Trip%20photos/day%201/deep/c.txt", b"charlie"),
+        ];
+        let total: usize = files.iter().map(|(_, body)| body.len()).sum();
+        let mut done = 0;
+        for (path, body) in files {
+            let head = format!(
+                "PUT /{TOKEN}/folder/{BATCH}/{path} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\
+                 X-Shelf-Total: {total}\r\nX-Shelf-Done: {done}\r\n\r\n",
+                body.len()
+            );
+            let (status, _) = raw(addr, &head, body).await;
+            assert_eq!(status, 200, "{path}");
+            done += body.len();
+        }
+        // Nothing is visible in the inbox until the phone says it is finished.
+        assert!(received(&rx).is_empty());
+        assert!(files_in(&tmp.0).iter().all(|name| name.starts_with('.')), "{:?}", files_in(&tmp.0));
+
+        let (status, _) = post(addr, &format!("folder/{BATCH}/done"), b"").await;
+        assert_eq!(status, 200);
+        let items = received(&rx);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].name, "Trip photos");
+        assert_eq!(items[0].from, "Phone");
+        assert_eq!(items[0].size, total as u64);
+        assert_eq!(items[0].path.as_deref(), Some(tmp.0.join("Trip photos").as_path()));
+        assert_eq!(
+            walk(&tmp.0),
+            vec!["Trip photos/a.txt", "Trip photos/day 1/b.txt", "Trip photos/day 1/deep/c.txt"]
+        );
+        assert_eq!(std::fs::read(tmp.0.join("Trip photos/day 1/b.txt")).unwrap(), b"bravo!");
+        assert_eq!(files_in(&tmp.0), vec!["Trip photos"], "no staging directory left behind");
+
+        // The batch is closed; finishing it again finds nothing.
+        let (status, _) = post(addr, &format!("folder/{BATCH}/done"), b"").await;
+        assert_eq!(status, 404);
+
+        // The same folder name again becomes a numbered copy, never a merge.
+        let (status, _) = put(addr, TOKEN, &format!("folder/{BATCH}2/Trip%20photos/a.txt"), b"alpha").await;
+        assert_eq!(status, 200);
+        let (status, _) = post(addr, &format!("folder/{BATCH}2/done"), b"").await;
+        assert_eq!(status, 200);
+        assert_eq!(files_in(&tmp.0), vec!["Trip photos", "Trip photos (1)"]);
+    }
+
+    #[tokio::test]
+    async fn folder_paths_cannot_escape_the_inbox() {
+        let tmp = TempDir::new();
+        let inbox = tmp.0.join("inbox");
+        let (shared, _rx) = test_shared(&inbox);
+        let (addr, _stop) = serve_for_test(&shared, Duration::from_secs(60)).await;
+        for (i, path) in [
+            "Root/..%2F..%2Fevil.txt",
+            "Root/%2E%2E/evil2.txt",
+            "Root/..%5C..%5Cevil3.txt",
+            "Root/sub/%2E%2E/%2E%2E/evil4.txt",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let (status, _) = put(addr, TOKEN, &format!("folder/{BATCH}/{path}"), format!("p{i}").as_bytes()).await;
+            assert_eq!(status, 200, "{path}");
+        }
+        let (status, _) = post(addr, &format!("folder/{BATCH}/done"), b"").await;
+        assert_eq!(status, 200);
+        assert!(!tmp.0.join("evil.txt").exists());
+        assert!(!tmp.0.join("evil2.txt").exists());
+        assert!(!tmp.0.join("evil3.txt").exists());
+        assert!(!tmp.0.join("evil4.txt").exists());
+        let saved = walk(&inbox);
+        assert_eq!(saved.len(), 4, "{saved:?}");
+        assert!(saved.iter().all(|path| path.starts_with("Root/")), "{saved:?}");
+    }
+
+    #[tokio::test]
+    async fn bad_folder_requests_are_refused() {
+        let tmp = TempDir::new();
+        let (shared, rx) = test_shared(&tmp.0);
+        let (addr, _stop) = serve_for_test(&shared, Duration::from_secs(60)).await;
+        // A file with no folder in front of it, an empty segment, a bad batch id.
+        for path in [
+            format!("folder/{BATCH}/lonely.txt"),
+            format!("folder/{BATCH}/Root//x.txt"),
+            "folder/short/Root/x.txt".to_string(),
+            "folder/bad!id!bad!id!/Root/x.txt".to_string(),
+        ] {
+            let (status, _) = put(addr, TOKEN, &path, b"x").await;
+            assert_eq!(status, 400, "{path}");
+        }
+        // One batch cannot switch to a different root folder halfway.
+        assert_eq!(put(addr, TOKEN, &format!("folder/{BATCH}/One/a.txt"), b"x").await.0, 200);
+        assert_eq!(put(addr, TOKEN, &format!("folder/{BATCH}/Two/b.txt"), b"x").await.0, 400);
+        // A wrong token never reaches the folder code.
+        let (status, _) = put(addr, "ffffffffffffffffffffffffffffffff", &format!("folder/{BATCH}/One/c.txt"), b"x").await;
+        assert_eq!(status, 404);
+        // Finishing a batch with no files stores nothing and shows nothing.
+        let (status, _) = post(addr, "folder/neverstarted1/done", b"").await;
+        assert_eq!(status, 404);
+        assert!(received(&rx).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_paused_shelf_refuses_folders_and_text() {
+        let tmp = TempDir::new();
+        let (shared, rx) = test_shared(&tmp.0);
+        shared.receiving_paused.store(true, Ordering::SeqCst);
+        let (addr, _stop) = serve_for_test(&shared, Duration::from_secs(60)).await;
+        assert_eq!(put(addr, TOKEN, &format!("folder/{BATCH}/Root/a.txt"), b"x").await.0, 503);
+        assert_eq!(post(addr, "text", b"hello").await.0, 503);
+        assert!(received(&rx).is_empty());
+        assert!(files_in(&tmp.0).is_empty());
+    }
+
+    #[tokio::test]
+    async fn text_notes_arrive_like_clipboard_text() {
+        let tmp = TempDir::new();
+        let (shared, rx) = test_shared(&tmp.0);
+        let (addr, _stop) = serve_for_test(&shared, Duration::from_secs(60)).await;
+
+        let note = "Wi-Fi: cafe-guest / pa55w0rd \u{2615}";
+        let (status, text) = post(addr, "text", note.as_bytes()).await;
+        assert_eq!(status, 200);
+        assert!(text.contains(r#""status":"ok""#));
+        let items = received(&rx);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, ItemKind::Text);
+        assert_eq!(items[0].text.as_deref(), Some(note));
+        assert_eq!(items[0].from, "Phone");
+        assert_eq!(items[0].size, note.len() as u64);
+        assert!(items[0].path.is_none());
+        assert!(files_in(&tmp.0).is_empty(), "text is never written to disk");
+
+        // The same note twice is recognised.
+        let (status, text) = post(addr, "text", note.as_bytes()).await;
+        assert_eq!(status, 200);
+        assert!(text.contains("duplicate"));
+        assert!(received(&rx).is_empty());
+
+        // Blank, invalid UTF-8 and oversized text are refused.
+        assert_eq!(post(addr, "text", b"  \n ").await.0, 400);
+        assert_eq!(post(addr, "text", &[0xff, 0xfe, 0xfd]).await.0, 400);
+        // Oversized text is refused from the header alone, before any of it is read.
+        let head = format!(
+            "POST /{TOKEN}/text HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n",
+            MAX_TEXT_BYTES + 1
+        );
+        assert_eq!(raw(addr, &head, b"").await.0, 413);
+        assert!(received(&rx).is_empty());
+    }
+
+    #[test]
+    fn folder_paths_parse_safely() {
+        let (batch, segments) = parse_folder_path("abcdef0123/My%20Folder/sub/a%2Fb.txt").unwrap();
+        assert_eq!(batch, "abcdef0123");
+        assert_eq!(segments, vec!["My Folder", "sub", "b.txt"]);
+        // Reserved device names are defused the same way as for single files.
+        assert_eq!(parse_folder_path("abcdef0123/Root/NUL.txt").unwrap().1[1], "_NUL.txt");
+        assert!(parse_folder_path("abcdef0123/OnlyRoot").is_none());
+        assert!(parse_folder_path("abcdef0123").is_none());
+        let deep = format!("abcdef0123/{}", vec!["d"; MAX_FOLDER_DEPTH + 1].join("/"));
+        assert!(parse_folder_path(&deep).is_none());
     }
 
     #[test]

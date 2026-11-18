@@ -17,7 +17,7 @@ network connection.
 - Cancel active transfers and resume interrupted file transfers.
 - Cancel transfers individually from their own progress row; interrupted large files resume from the completed portion after a reconnect.
 - Right-click files or folders in Explorer and choose **Send with Shelf** instead of dragging them to the edge.
-- Show a QR code that lets a phone send photos and files to the shelf from its browser, with nothing to install.
+- Show a QR code that lets a phone send photos, files, whole folders and text to the shelf from its browser, with nothing to install.
 - Use the shelf as a stash when no device is online: drop files and folders on it, keep them as long as you like, and drag them out into any app later.
 - Detect duplicate content and avoid creating duplicate received items.
 - Preview received images and PDFs in the item list, with a quick text peek for received text.
@@ -80,13 +80,21 @@ it and Shelf keeps a copy until you remove it; nothing expires and the copies su
 
 ## Send from your phone
 
-Any phone with a camera and a browser can drop files on the shelf. The phone does not
+Any phone with a camera and a browser can drop files, folders and text on the shelf. The phone does not
 need Shelf installed and does not need to be paired.
 
 1. Make sure the phone and the PC are on the same Wi-Fi or network.
 2. Click the **QR** button in the round quick-action row (hover text: *Phone upload*).
 3. Scan the code with the phone camera and open the link.
-4. Tap **Choose files**, pick photos or files, and they appear on the shelf.
+4. Tap **Choose files** to pick photos or files, **Choose folder** to send a whole folder, or
+   **Send text** to type or paste a note. They appear on the shelf.
+
+A folder arrives as one item with its subfolders intact, and only once every file in it has
+arrived, so a half-sent folder never shows up. If the connection drops, **Retry failed**
+continues from the file that failed. Text arrives like clipboard text from a paired PC.
+Folder picking depends on the phone's browser: Chrome on Android and computer browsers
+offer it (computer browsers also accept a folder dragged onto the page); a browser without
+folder picking sends the files it is given as plain files. Empty folders are not sent.
 
 Uploads show progress in the transfer list, can be cancelled from their row, honor
 **Pause receiving**, and skip files that are already on the shelf. Received photos get the
