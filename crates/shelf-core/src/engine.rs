@@ -107,6 +107,10 @@ pub enum Command {
     /// this shelf. Answered with `Event::WebDropReady`.
     StartWebDrop,
     StopWebDrop,
+    /// Copies files or folders into the stash (the persistent holding area).
+    StashAdd(Vec<PathBuf>),
+    StashRemove(String),
+    StashClear,
     SetReceiveDirectory(PathBuf),
     SaveDeviceGroup(DeviceGroup),
     ExportRoomBackup {
@@ -189,6 +193,8 @@ pub enum Event {
     },
     /// The phone upload page was stopped or expired.
     WebDropStopped,
+    /// The stash contents changed. Always carries the full list, newest first.
+    StashChanged(Vec<crate::stash::StashEntry>),
     /// A phone sent a file that is already on the shelf, so nothing new was added.
     WebDropDuplicate {
         name: String,
@@ -248,6 +254,7 @@ struct Shared {
     cancelled_transfers: Mutex<HashSet<String>>,
     received_hashes: Mutex<HashSet<[u8; 32]>>,
     webdrop: Mutex<Option<webdrop::WebDropSession>>,
+    stash: Arc<crate::stash::Stash>,
 }
 
 fn transfer_key(direction: TransferDirection, name: &str, peer: &str) -> String {
@@ -567,6 +574,7 @@ pub fn start(wake: impl Fn() + Send + Sync + 'static) -> Result<(Handle, Receive
         cancelled_transfers: Mutex::new(HashSet::new()),
         received_hashes: Mutex::new(HashSet::new()),
         webdrop: Mutex::new(None),
+        stash: Arc::new(crate::stash::Stash::open(crate::store::data_dir().join("stash"))),
     });
     std::thread::Builder::new()
         .name("shelf-engine".into())
@@ -680,6 +688,7 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
         shared.emit(Event::DeviceGroups(config.device_groups.clone()));
         shared.emit(Event::ReceiveDirectory(config.receive_dir.clone()));
     }
+    publish_stash(&shared);
 
     let daemon = match start_discovery(&shared, &name, &public_key, port) {
         Ok(d) => Some(d),
@@ -1024,6 +1033,20 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
             }
             Command::StartWebDrop => webdrop::start(&shared).await,
             Command::StopWebDrop => webdrop::stop(&shared),
+            Command::StashAdd(paths) => {
+                let shared = shared.clone();
+                // Copying can take a while, so it must not block the command loop.
+                tokio::task::spawn_blocking(move || stash_add(&shared, paths));
+            }
+            Command::StashRemove(id) => {
+                if shared.stash.remove(&id) {
+                    publish_stash(&shared);
+                }
+            }
+            Command::StashClear => {
+                shared.stash.clear();
+                publish_stash(&shared);
+            }
             Command::SetReceiveDirectory(path) => {
                 let result = {
                     let mut config = shared.config.lock().unwrap();
@@ -1059,6 +1082,54 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
         let _ = daemon.unregister(&fullname);
         tokio::time::sleep(Duration::from_millis(300)).await;
         let _ = daemon.shutdown();
+    }
+}
+
+// ---------------------------------------------------------------- stash
+
+/// Held while the stash list is read and announced. Without it, a slow copy finishing in the
+/// background could announce a list it read *before* a removal, after the removal's own
+/// announcement, and the removed item would reappear in the UI.
+static STASH_PUBLISH: Mutex<()> = Mutex::new(());
+
+fn publish_stash(shared: &Arc<Shared>) {
+    let _guard = STASH_PUBLISH.lock().unwrap_or_else(|e| e.into_inner());
+    shared.emit(Event::StashChanged(shared.stash.entries()));
+}
+
+/// Copies each path into the stash, announcing the new list after every item so a big drop
+/// fills in progressively. Problems are reported as `Info`, not `Error`, because `Error` makes
+/// the UI mark the latest network transfer as failed and this has nothing to do with one.
+fn stash_add(shared: &Arc<Shared>, paths: Vec<PathBuf>) {
+    let (mut added, mut failed) = (0usize, 0usize);
+    for path in paths {
+        // An item dragged out of the stash and dropped back on it is not news.
+        if shared.stash.contains_path(&path) {
+            continue;
+        }
+        let label = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.display().to_string());
+        match shared.stash.add(&path) {
+            Ok(_) => {
+                added += 1;
+                publish_stash(shared);
+            }
+            Err(error) => {
+                failed += 1;
+                shared.emit(Event::Info(format!("Could not stash {label}: {error:#}")));
+            }
+        }
+    }
+    if added > 0 {
+        shared.emit(Event::Info(if added == 1 && failed == 0 {
+            "Stashed 1 item".to_string()
+        } else if failed == 0 {
+            format!("Stashed {added} items")
+        } else {
+            format!("Stashed {added} items, {failed} failed")
+        }));
     }
 }
 

@@ -535,6 +535,11 @@ mod tests {
             cancelled_transfers: Mutex::new(HashSet::new()),
             received_hashes: Mutex::new(HashSet::new()),
             webdrop: Mutex::new(None),
+            stash: Arc::new(crate::stash::Stash::open(std::env::temp_dir().join(format!(
+                "shelf-webdrop-stash-{}-{:08x}",
+                std::process::id(),
+                rand::random::<u32>()
+            )))),
         });
         (shared, rx)
     }

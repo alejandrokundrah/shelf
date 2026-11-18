@@ -1954,27 +1954,34 @@ fn transfers_summary(ui: &mut egui::Ui, transfers: &[TransferStatus]) {
 }
 
 /// The drop target: a wide pill that lights up while files hover over it.
-fn drop_zone(ui: &mut egui::Ui, hovering: bool) {
+fn drop_zone(ui: &mut egui::Ui, hovering: bool, stash_mode: bool) {
     let t = ui
         .ctx()
         .animate_bool_responsive(egui::Id::new("drop_zone_hover"), hovering);
-    let title = if hovering { "Release to send" } else { tr("Drop files") };
+    let title = match (hovering, stash_mode) {
+        (true, true) => "Release to stash",
+        (true, false) => "Release to send",
+        (false, _) => tr("Drop files"),
+    };
+    let subtitle = if stash_mode { "Keeps them here until you drag them out" } else { tr("Drag here to send") };
     glass_tile(
         ui,
         ui.available_width(),
         84.0,
         glyph_share,
         title,
-        tr("Drag here to send"),
+        subtitle,
         t,
         false,
         true,
     );
 }
 
-fn draw_kind_icon(painter: &egui::Painter, rect: Rect, kind: &ItemKind) {
+/// Draws an item's icon tile. Draws a folder when `is_dir` is set (folders only exist in the stash).
+fn draw_item_icon(painter: &egui::Painter, rect: Rect, kind: &ItemKind, is_dir: bool) {
     let p = pal();
     let color = match kind {
+        _ if is_dir => p.orange,
         ItemKind::File => p.accent,
         ItemKind::Text => p.orange,
         ItemKind::Image => p.purple,
@@ -2006,6 +2013,14 @@ fn draw_kind_icon(painter: &egui::Painter, rect: Rect, kind: &ItemKind) {
     };
     let c = rect.center();
     let s = Stroke::new(1.8_f32, glyph);
+    if is_dir {
+        painter.rect_stroke(Rect::from_center_size(c + vec2(0.0, 2.0), vec2(20.0, 14.0)), 3.0, s);
+        painter.add(egui::Shape::line(
+            vec![c + vec2(-10.0, -2.5), c + vec2(-10.0, -7.5), c + vec2(-3.0, -7.5), c + vec2(-1.0, -5.0)],
+            s,
+        ));
+        return;
+    }
     match kind {
         ItemKind::File => {
             painter.rect_stroke(Rect::from_center_size(c, vec2(13.0, 17.0)), 3.0, s);
@@ -2096,6 +2111,10 @@ struct ShelfItem {
     item: ReceivedItem,
     received: Instant,
     preview: Option<egui::TextureHandle>,
+    /// Set for items in the stash. Those never expire and survive restarts, unlike items
+    /// received from a device, which disappear after an hour.
+    stash_id: Option<String>,
+    is_dir: bool,
 }
 
 struct PairDialog {
@@ -2256,6 +2275,8 @@ struct IncomingRequest {
 
 enum Action {
     SendClipboard,
+    /// Starts dragging item `i` out of the shelf into another app.
+    DragOut(usize),
     /// Opens or closes the QR code a phone can scan to send files to this shelf.
     TogglePhoneUpload,
     StartPairing,
@@ -2685,6 +2706,38 @@ impl ShelfApp {
                     });
                     self.open_for(4);
                 }
+                Event::StashChanged(entries) => {
+                    // Keep the thumbnails we already decoded; only new items need loading.
+                    let mut previews: std::collections::HashMap<String, Option<egui::TextureHandle>> =
+                        self.items
+                            .iter_mut()
+                            .filter_map(|it| it.stash_id.clone().map(|id| (id, it.preview.take())))
+                            .collect();
+                    self.items.retain(|it| it.stash_id.is_none());
+                    for entry in entries {
+                        let item = ReceivedItem {
+                            id: u64::from_str_radix(&entry.id, 16).unwrap_or(0),
+                            room_id: None,
+                            kind: if entry.is_image() { ItemKind::Image } else { ItemKind::File },
+                            name: entry.name.clone(),
+                            from: "Stash".to_string(),
+                            size: entry.size,
+                            path: Some(entry.path.clone()),
+                            text: None,
+                        };
+                        let preview = match previews.remove(&entry.id) {
+                            Some(existing) => existing,
+                            None => load_item_preview(&self.ctx, &item),
+                        };
+                        self.items.push(ShelfItem {
+                            item,
+                            received: Instant::now(),
+                            preview,
+                            stash_id: Some(entry.id),
+                            is_dir: entry.is_dir,
+                        });
+                    }
+                }
                 Event::WebDropStopped => {
                     if self.phone_upload.take().is_some() {
                         self.record_audit("Phone upload closed");
@@ -2727,6 +2780,8 @@ impl ShelfApp {
                             item,
                             received: Instant::now(),
                             preview,
+                            stash_id: None,
+                            is_dir: false,
                         },
                     );
                     self.open_for(4);
@@ -2798,15 +2853,63 @@ impl ShelfApp {
         });
     }
 
+    /// True if at least one device the current target selects can be reached right now.
+    fn any_target_online(&self) -> bool {
+        self.paired.iter().any(|device| {
+            device.addr.is_some()
+                && match &self.target {
+                    Target::All => true,
+                    Target::Peer(key) => &device.public_key == key,
+                    Target::Peers(keys) => keys.contains(&device.public_key),
+                }
+        })
+    }
+
+    /// Sends files to the chosen device(s). When none of them can be reached there is nobody
+    /// to send to, so the files are kept in the stash instead.
+    fn send_or_stash(&mut self, paths: Vec<PathBuf>) {
+        if self.any_target_online() {
+            self.set_status(format!("Sending {} file(s)...", paths.len()));
+            self.handle.send(Command::Send {
+                target: self.target.clone(),
+                payload: Payload::Files(paths),
+            });
+        } else {
+            self.set_status(format!("Stashing {} item(s)...", paths.len()));
+            self.handle.send(Command::StashAdd(paths));
+        }
+    }
+
+    /// Starts a real Windows drag of a shelf item, so it can be dropped into Explorer, a
+    /// browser upload box, a chat window or any other app. Returns when the drag ends.
+    #[cfg(windows)]
+    fn drag_out(&mut self, frame: &eframe::Frame, path: PathBuf) {
+        if !path.exists() {
+            self.set_status("That item is no longer available");
+            return;
+        }
+        let started = drag::start_drag(
+            frame,
+            drag::DragItem::Files(vec![path]),
+            drag::Image::Raw(Vec::new()),
+            |_, _| {},
+            drag::Options::default(),
+        );
+        if let Err(error) = started {
+            self.set_status(format!("Could not start the drag: {error}"));
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn drag_out(&mut self, _frame: &eframe::Frame, _path: PathBuf) {
+        self.set_status("Dragging items out is only supported on Windows");
+    }
+
     fn send_paths(&mut self, paths: Vec<PathBuf>) {
         if paths.is_empty() {
             return;
         }
-        self.set_status(format!("Sending {} file(s)...", paths.len()));
-        self.handle.send(Command::Send {
-            target: self.target.clone(),
-            payload: Payload::Files(paths),
-        });
+        self.send_or_stash(paths);
         self.hotkey_closed = false;
         self.open_for(4);
     }
@@ -2957,7 +3060,7 @@ impl eframe::App for ShelfApp {
         egui::Rgba::TRANSPARENT.to_array()
     }
 
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // Follow the system light/dark setting.
         let dark = detect_dark(ctx);
         let p = match (self.material, dark) {
@@ -3020,18 +3123,14 @@ impl eframe::App for ShelfApp {
                     });
                 }
             } else {
-                self.set_status(format!("Sending {} file(s)...", dropped.len()));
-                self.handle.send(Command::Send {
-                    target: self.target.clone(),
-                    payload: Payload::Files(dropped),
-                });
+                self.send_or_stash(dropped);
             }
             self.open_for(3);
         }
 
         // Expire old items.
         self.items.retain(|it| {
-            if it.received.elapsed() > ITEM_TTL {
+            if it.stash_id.is_none() && it.received.elapsed() > ITEM_TTL {
                 if let Some(p) = &it.item.path {
                     let _ = std::fs::remove_file(p);
                 }
@@ -3101,6 +3200,7 @@ impl eframe::App for ShelfApp {
             .map(|(i, m)| format!("Screen {}{}", i + 1, if m.primary { " (main)" } else { "" }))
             .collect();
         let paired = self.paired.clone();
+        let stash_mode = !self.any_target_online();
         let nearby = self.nearby.clone();
         let device_groups = self.device_groups.clone();
         let receive_dir = self.receive_dir.clone();
@@ -3117,7 +3217,8 @@ impl eframe::App for ShelfApp {
                     Side::Left => full.left() + 6.0,
                 };
                 let pill = Rect::from_center_size(Pos2::new(pill_x, full.center().y), vec2(5.0, 76.0));
-                let col = if self.items.is_empty() && self.room_requests.is_empty() {
+                let waiting = self.items.iter().any(|it| it.stash_id.is_none());
+                let col = if !waiting && self.room_requests.is_empty() {
                     if p.dark { Color32::from_white_alpha(120) } else { Color32::from_black_alpha(90) }
                 } else {
                     p.accent
@@ -3232,7 +3333,7 @@ impl eframe::App for ShelfApp {
                     {
                         // Home layout shared by the macOS glass and Material 3 styles: drop pill, Clipboard / Devices tiles, transfers,
                         // round quick actions and the All settings switch.
-                        drop_zone(ui, hovering_files);
+                        drop_zone(ui, hovering_files, stash_mode);
                         let tile_gap = 8.0;
                         let tile_w = ((ui.available_width() - tile_gap) / 2.0).floor();
                         let online = paired.iter().filter(|d| d.addr.is_some()).count();
@@ -4392,9 +4493,13 @@ impl eframe::App for ShelfApp {
                                 arrow_tray(ui.painter(), r.center(), p.text3);
                                 ui.label(semibold(tr("Nothing on the shelf"), 13.5).color(p.text));
                                 ui.label(
-                                    RichText::new("Items you receive show up here for an hour.")
-                                        .size(12.0)
-                                        .color(p.text2),
+                                    RichText::new(if stash_mode {
+                                        "Drop files or folders here to keep them. Drag them out whenever you need them."
+                                    } else {
+                                        "Items you receive show up here for an hour."
+                                    })
+                                    .size(12.0)
+                                    .color(p.text2),
                                 );
                                 ui.add_space(6.0);
                             });
@@ -4413,7 +4518,7 @@ impl eframe::App for ShelfApp {
                             })
                             .unwrap_or(true);
                         card(ui, |ui| {
-                            ui.horizontal(|ui| {
+                            let top = ui.horizontal(|ui| {
                                 if let Some(preview) = &it.preview {
                                     ui.add(egui::Image::new(egui::load::SizedTexture::new(
                                         preview.id(),
@@ -4424,7 +4529,7 @@ impl eframe::App for ShelfApp {
                                         vec2(42.0, 42.0),
                                         egui::Sense::hover(),
                                     );
-                                    draw_kind_icon(ui.painter(), icon_rect, &it.item.kind);
+                                    draw_item_icon(ui.painter(), icon_rect, &it.item.kind, it.is_dir);
                                 }
                                 ui.vertical(|ui| {
                                     ui.spacing_mut().item_spacing.y = 2.0;
@@ -4450,22 +4555,41 @@ impl eframe::App for ShelfApp {
                                                 .color(p.text2),
                                         );
                                     }
-                                    let mins = ITEM_TTL
-                                        .saturating_sub(it.received.elapsed())
-                                        .as_secs()
-                                        / 60;
-                                    ui.label(
-                                        RichText::new(format!(
+                                    let detail = if it.stash_id.is_some() {
+                                        format!(
+                                            "{} \u{00B7} {}",
+                                            if it.is_dir { "Folder" } else { "Stashed" },
+                                            human_size(it.item.size)
+                                        )
+                                    } else {
+                                        let mins = ITEM_TTL
+                                            .saturating_sub(it.received.elapsed())
+                                            .as_secs()
+                                            / 60;
+                                        format!(
                                             "{} \u{00B7} {} \u{00B7} {} min left",
                                             shorten(&it.item.from, 14),
                                             human_size(it.item.size),
                                             mins
-                                        ))
-                                        .size(11.5)
-                                        .color(p.text3),
-                                    );
+                                        )
+                                    };
+                                    ui.label(RichText::new(detail).size(11.5).color(p.text3));
                                 });
                             });
+                            if it.item.path.is_some() {
+                                // The top of the card is a handle: drag it into any other app.
+                                let area = Rect::from_min_max(
+                                    top.response.rect.min,
+                                    Pos2::new(ui.max_rect().right(), top.response.rect.max.y),
+                                );
+                                let handle = ui
+                                    .interact(area, ui.id().with(("item-drag", i)), egui::Sense::drag())
+                                    .on_hover_cursor(egui::CursorIcon::Grab)
+                                    .on_hover_text("Drag out to another app");
+                                if handle.drag_started() {
+                                    actions.push(Action::DragOut(i));
+                                }
+                            }
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 6.0;
                                 if capsule(ui, "Copy", Look::Tint(p.accent), 26.0, None, true)
@@ -4504,6 +4628,11 @@ impl eframe::App for ShelfApp {
         for a in actions {
             match a {
                 Action::SendClipboard => self.send_clipboard(),
+                Action::DragOut(i) => {
+                    if let Some(path) = self.items.get(i).and_then(|it| it.item.path.clone()) {
+                        self.drag_out(&*frame, path);
+                    }
+                }
                 Action::TogglePhoneUpload => {
                     if self.phone_upload.take().is_some() {
                         self.handle.send(Command::StopWebDrop);
@@ -4753,11 +4882,28 @@ impl eframe::App for ShelfApp {
             }
         }
         remove.sort_unstable();
+        let stash_total = self.items.iter().filter(|it| it.stash_id.is_some()).count();
+        let mut stash_removed: Vec<String> = Vec::new();
         for i in remove.into_iter().rev() {
             if i < self.items.len() {
                 let it = self.items.remove(i);
-                if let Some(p) = it.item.path {
-                    let _ = std::fs::remove_file(p);
+                match it.stash_id {
+                    // The engine owns the stash's files and deletes them.
+                    Some(id) => stash_removed.push(id),
+                    None => {
+                        if let Some(p) = it.item.path {
+                            let _ = std::fs::remove_file(p);
+                        }
+                    }
+                }
+            }
+        }
+        if !stash_removed.is_empty() {
+            if stash_removed.len() == stash_total {
+                self.handle.send(Command::StashClear);
+            } else {
+                for id in stash_removed {
+                    self.handle.send(Command::StashRemove(id));
                 }
             }
         }

@@ -6,6 +6,7 @@ mod dpapi;
 pub mod engine;
 pub mod pairing;
 pub mod protocol;
+pub mod stash;
 pub mod store;
 
 pub use engine::{
@@ -13,5 +14,6 @@ pub use engine::{
     TransferDirection,
 };
 pub use protocol::{ItemKind, RoomMessage};
+pub use stash::StashEntry;
 pub use store::{data_dir, inbox_dir, room_dir};
 pub use store::{DeviceGroup, Room, RoomFile, RoomMember, RoomRole, RoomUpdate};
