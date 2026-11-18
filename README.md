@@ -17,7 +17,7 @@ network connection.
 - Cancel active transfers and resume interrupted file transfers.
 - Cancel transfers individually from their own progress row; interrupted large files resume from the completed portion after a reconnect.
 - Right-click files or folders in Explorer and choose **Send with Shelf** instead of dragging them to the edge.
-- Show a QR code that lets a phone send photos, files, whole folders and text to the shelf from its browser, with nothing to install.
+- Show a QR code that lets a phone send photos, files, whole folders and text to the shelf from its browser, and lets the phone download files and folders you choose on the PC, with nothing to install.
 - Use the shelf as a stash when no device is online: drop files and folders on it, keep them as long as you like, and drag them out into any app later.
 - Detect duplicate content and avoid creating duplicate received items.
 - Preview received images and PDFs in the item list, with a quick text peek for received text.
@@ -80,7 +80,7 @@ it and Shelf keeps a copy until you remove it; nothing expires and the copies su
 
 ## Send from your phone
 
-Any phone with a camera and a browser can drop files, folders and text on the shelf. The phone does not
+Any phone with a camera and a browser can drop files, folders and text on the shelf, and save files you share back. The phone does not
 need Shelf installed and does not need to be paired.
 
 1. Make sure the phone and the PC are on the same Wi-Fi or network.
@@ -101,7 +101,15 @@ Uploads show progress in the transfer list, can be cancelled from their row, hon
 usual image preview. Click the button again, or **Stop**, to close the page; it also closes
 by itself after 10 minutes. **Copy link** is there if the phone cannot scan.
 
-Phone upload is send-only: nothing on the shelf can be read back through it.
+### From the PC to the phone
+
+With the QR code open, click **Add files** or **Add folder** under it. Whatever you add shows
+up on the phone page under **From this PC**, with a **Save** button; folders download as a
+`.zip`. Click **Remove** next to an item to take it back off the page.
+
+Only items you add this way can be fetched. The phone cannot browse the PC or the shelf, the
+list disappears when you close the page, and links inside a folder are skipped rather than
+followed.
 
 > **It is not encrypted.** A phone browser cannot take part in Shelf's paired, encrypted
 > channel, so this page is plain HTTP on the local network. The only credential is a random

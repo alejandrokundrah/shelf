@@ -107,6 +107,11 @@ pub enum Command {
     /// this shelf. Answered with `Event::WebDropReady`.
     StartWebDrop,
     StopWebDrop,
+    /// Adds files or folders to the open phone page so the phone can download them. Only what
+    /// is added here is reachable from the phone. Answered with `Event::WebDropOffers`.
+    WebDropOffer(Vec<PathBuf>),
+    /// Takes one offered item (by `WebDropOffer::id`) off the phone page.
+    WebDropWithdraw(u64),
     /// Copies files or folders into the stash (the persistent holding area).
     StashAdd(Vec<PathBuf>),
     StashRemove(String),
@@ -161,6 +166,15 @@ pub enum TransferDirection {
     Download,
 }
 
+/// One item the PC has put on the phone page for download.
+#[derive(Clone, Debug)]
+pub struct WebDropOffer {
+    pub id: u64,
+    pub name: String,
+    pub size: u64,
+    pub is_dir: bool,
+}
+
 pub enum Event {
     RoomUpdated(Room),
     RoomRemoved(String),
@@ -193,6 +207,8 @@ pub enum Event {
     },
     /// The phone upload page was stopped or expired.
     WebDropStopped,
+    /// What the phone page currently offers for download. Always the full list.
+    WebDropOffers(Vec<WebDropOffer>),
     /// The stash contents changed. Always carries the full list, newest first.
     StashChanged(Vec<crate::stash::StashEntry>),
     /// A phone sent a file that is already on the shelf, so nothing new was added.
@@ -1033,6 +1049,12 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
             }
             Command::StartWebDrop => webdrop::start(&shared).await,
             Command::StopWebDrop => webdrop::stop(&shared),
+            Command::WebDropOffer(paths) => {
+                let shared = shared.clone();
+                // Measuring a big folder can take a while, so it must not block the command loop.
+                tokio::spawn(async move { webdrop::offer(&shared, paths).await });
+            }
+            Command::WebDropWithdraw(id) => webdrop::withdraw(&shared, id),
             Command::StashAdd(paths) => {
                 let shared = shared.clone();
                 // Copying can take a while, so it must not block the command loop.

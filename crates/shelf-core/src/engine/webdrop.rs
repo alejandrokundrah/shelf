@@ -10,7 +10,9 @@
 //!   time the feature is started, so an old QR code stops working.
 //! * Plain HTTP on the local network, so it is NOT encrypted: anyone who can watch the traffic
 //!   on that network could read the token and the files. The UI says so.
-//! * Upload only. Nothing on the shelf can be read back through this endpoint.
+//! * Nothing on the PC can be read through this endpoint except items the user has explicitly
+//!   added to the page ("offers"), which are listed by random id. The list is cleared when the
+//!   session ends, and no request can name a path.
 //!
 //! What a phone (or any browser) can send:
 //!
@@ -19,10 +21,15 @@
 //!   a whole folder. Files are staged in a hidden directory and only appear in the inbox, as one
 //!   folder item, when the phone says it is done, so a folder never shows up half-finished.
 //! * `POST /<token>/text`: a text note, which arrives like clipboard text from a paired PC.
+//!
+//! And what the phone can fetch (only items the PC user added to the page):
+//!
+//! * `GET /<token>/offers`: the list, as JSON.
+//! * `GET /<token>/get/<id>`: one offered file, or an offered folder as a zip.
 
 use super::{
     clean_file_name, clear_cancelled, emit_progress, is_cancelled, unique_inbox_path, Event,
-    ReceivedItem, Shared, TransferDirection,
+    ReceivedItem, Shared, TransferDirection, WebDropOffer,
 };
 use crate::protocol::{ItemKind, MAX_FILE_BYTES, MAX_TEXT_BYTES};
 use crate::store::inbox_dir;
@@ -62,7 +69,26 @@ const PAGE: &str = include_str!("webdrop.html");
 pub(super) struct WebDropSession {
     id: u64,
     stop: Arc<Notify>,
+    /// What the PC has put on the page for the phone to download.
+    offers: Arc<Mutex<Vec<Offer>>>,
 }
+
+/// One item offered to the phone. The path never leaves this struct: the phone only ever sees
+/// the id, name and size.
+#[derive(Clone)]
+struct Offer {
+    id: u64,
+    name: String,
+    path: PathBuf,
+    is_dir: bool,
+    size: u64,
+}
+
+/// Most items the PC can offer at once.
+const MAX_OFFERS: usize = 50;
+/// Most files and folders packed into one folder download.
+const MAX_ZIP_ENTRIES: u64 = 100_000;
+const MAX_ZIP_DEPTH: usize = 64;
 
 /// A folder that is still being uploaded. The files themselves live in a hidden staging
 /// directory inside the inbox until the phone finishes the batch.
@@ -98,6 +124,7 @@ pub(super) async fn start(shared: &Arc<Shared>) {
     *shared.webdrop.lock().unwrap() = Some(WebDropSession {
         id,
         stop: stop.clone(),
+        offers: Arc::new(Mutex::new(Vec::new())),
     });
     shared.emit(Event::WebDropReady {
         url: format!("http://{ip}:{port}/{token}"),
@@ -213,6 +240,10 @@ async fn handle(
             finish_folder(shared, batches, &mut stream, &path[7..]).await
         }
         ("POST", "text") => upload_text(shared, &mut stream, &request, leftover).await,
+        ("GET", "offers") => list_offers(shared, &mut stream).await,
+        ("GET", path) if path.starts_with("get/") => {
+            download(shared, &mut stream, &path[4..]).await
+        }
         ("PUT", name) if !name.is_empty() => {
             upload(shared, &mut stream, &request, name, leftover).await
         }
@@ -700,6 +731,258 @@ async fn upload_text(
     respond(stream, 200, "application/json", br#"{"status":"ok"}"#).await
 }
 
+// ---------------------------------------------------------------- PC to phone
+
+fn session_offers(shared: &Arc<Shared>) -> Option<Arc<Mutex<Vec<Offer>>>> {
+    shared.webdrop.lock().unwrap().as_ref().map(|session| session.offers.clone())
+}
+
+fn offer_infos(offers: &[Offer]) -> Vec<WebDropOffer> {
+    offers
+        .iter()
+        .map(|o| WebDropOffer { id: o.id, name: o.name.clone(), size: o.size, is_dir: o.is_dir })
+        .collect()
+}
+
+/// Puts files or folders on the phone page. Symbolic links and anything that does not exist
+/// are skipped; an item that is already offered is not added twice.
+pub(super) async fn offer(shared: &Arc<Shared>, paths: Vec<PathBuf>) {
+    let Some(offers) = session_offers(shared) else {
+        shared.emit(Event::Info("Open the phone page first, then add files for the phone.".into()));
+        return;
+    };
+    let mut skipped = 0;
+    for path in paths {
+        let probe = path.clone();
+        let measured = tokio::task::spawn_blocking(move || {
+            let meta = std::fs::symlink_metadata(&probe).ok()?;
+            if meta.file_type().is_symlink() {
+                return None;
+            }
+            let name = probe.file_name()?.to_string_lossy().to_string();
+            if meta.is_dir() {
+                Some((name, true, folder_stats(&probe).1))
+            } else if meta.is_file() {
+                Some((name, false, meta.len()))
+            } else {
+                None
+            }
+        })
+        .await
+        .ok()
+        .flatten();
+        let Some((name, is_dir, size)) = measured else {
+            skipped += 1;
+            continue;
+        };
+        let mut guard = offers.lock().unwrap();
+        if guard.iter().any(|existing| existing.path == path) {
+            continue;
+        }
+        if guard.len() >= MAX_OFFERS {
+            skipped += 1;
+            continue;
+        }
+        let id = rand::random::<u64>();
+        guard.push(Offer { id, name, path, is_dir, size });
+    }
+    if skipped > 0 {
+        shared.emit(Event::Info(format!(
+            "{skipped} item(s) could not be added for the phone (missing, a link, or the list is full)."
+        )));
+    }
+    let infos = offer_infos(&offers.lock().unwrap());
+    shared.emit(Event::WebDropOffers(infos));
+}
+
+pub(super) fn withdraw(shared: &Arc<Shared>, id: u64) {
+    let Some(offers) = session_offers(shared) else { return };
+    let infos = {
+        let mut guard = offers.lock().unwrap();
+        guard.retain(|o| o.id != id);
+        offer_infos(&guard)
+    };
+    shared.emit(Event::WebDropOffers(infos));
+}
+
+fn json_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+async fn list_offers(shared: &Arc<Shared>, stream: &mut TcpStream) -> Result<()> {
+    let offers: Vec<Offer> = session_offers(shared)
+        .map(|offers| offers.lock().unwrap().clone())
+        .unwrap_or_default();
+    let items: Vec<String> = offers
+        .iter()
+        .map(|o| {
+            format!(
+                r#"{{"id":"{:x}","name":"{}","size":{},"dir":{}}}"#,
+                o.id,
+                json_escape(&o.name),
+                o.size,
+                o.is_dir
+            )
+        })
+        .collect();
+    let body = format!("[{}]", items.join(","));
+    respond(stream, 200, "application/json", body.as_bytes()).await
+}
+
+/// Removes a temporary file when dropped, whatever way a download ends.
+struct TempFile(PathBuf);
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+async fn download(shared: &Arc<Shared>, stream: &mut TcpStream, id_hex: &str) -> Result<()> {
+    let id = match u64::from_str_radix(id_hex, 16) {
+        Ok(id) if (1..=16).contains(&id_hex.len()) => id,
+        _ => return respond(stream, 404, "text/plain", b"Not found").await,
+    };
+    let offer = session_offers(shared)
+        .and_then(|offers| offers.lock().unwrap().iter().find(|o| o.id == id).cloned());
+    let Some(offer) = offer else {
+        return respond(stream, 404, "text/plain", b"Not found").await;
+    };
+
+    // A folder is packed into a temporary zip first; a file is sent as it is.
+    let mut _cleanup = None;
+    let (path, file_name) = if offer.is_dir {
+        let zip_path = std::env::temp_dir().join(format!("shelf-web-{:016x}.zip", rand::random::<u64>()));
+        _cleanup = Some(TempFile(zip_path.clone()));
+        let (source, target, root) = (offer.path.clone(), zip_path.clone(), offer.name.clone());
+        let packed = tokio::task::spawn_blocking(move || zip_folder(&source, &target, &root)).await;
+        match packed {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                shared.emit(Event::Error(format!("Could not pack {} for the phone: {error}", offer.name)));
+                return respond(stream, 500, "text/plain", b"Could not pack the folder").await;
+            }
+            Err(_) => return respond(stream, 500, "text/plain", b"Could not pack the folder").await,
+        }
+        (zip_path, format!("{}.zip", offer.name))
+    } else {
+        (offer.path.clone(), offer.name.clone())
+    };
+
+    let Ok(mut file) = tokio::fs::File::open(&path).await else {
+        return respond(stream, 404, "text/plain", b"Not found").await;
+    };
+    let Ok(meta) = file.metadata().await else {
+        return respond(stream, 404, "text/plain", b"Not found").await;
+    };
+    if !meta.is_file() {
+        return respond(stream, 404, "text/plain", b"Not found").await;
+    }
+    let length = meta.len();
+    let head = format!(
+        "HTTP/1.1 200 OK\r\n\
+         Content-Type: application/octet-stream\r\n\
+         Content-Length: {length}\r\n\
+         Content-Disposition: attachment; filename=\"{}\"; filename*=UTF-8''{}\r\n\
+         Cache-Control: no-store\r\n\
+         X-Content-Type-Options: nosniff\r\n\
+         Referrer-Policy: no-referrer\r\n\
+         Content-Security-Policy: default-src 'none'; sandbox\r\n\
+         Connection: close\r\n\r\n",
+        ascii_file_name(&file_name),
+        percent_encode(&file_name),
+    );
+    timeout(BODY_IDLE_TIMEOUT, stream.write_all(head.as_bytes())).await??;
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut sent: u64 = 0;
+    while sent < length {
+        let want = (length - sent).min(buf.len() as u64) as usize;
+        let n = file.read(&mut buf[..want]).await?;
+        if n == 0 {
+            bail!("the file got shorter while it was being sent");
+        }
+        timeout(BODY_IDLE_TIMEOUT, stream.write_all(&buf[..n]))
+            .await
+            .map_err(|_| anyhow!("the phone stopped receiving"))??;
+        sent += n as u64;
+    }
+    stream.flush().await?;
+    let _ = stream.shutdown().await;
+    shared.emit(Event::Info(format!("{} sent to the phone", offer.name)));
+    Ok(())
+}
+
+/// A header-safe fallback name for old browsers: printable ASCII only.
+fn ascii_file_name(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_ascii_graphic() || c == ' ' { c } else { '_' })
+        .map(|c| if matches!(c, '"' | '\\' | '%' | ';') { '_' } else { c })
+        .collect()
+}
+
+/// RFC 5987 percent-encoding for the UTF-8 file name.
+fn percent_encode(name: &str) -> String {
+    let mut out = String::new();
+    for byte in name.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// Packs `source` into a zip at `dest`, with `root` as the single top-level folder. Links are
+/// skipped rather than followed, so a link inside the folder cannot pull in files from elsewhere.
+fn zip_folder(source: &Path, dest: &Path, root: &str) -> Result<()> {
+    let file = std::fs::File::create(dest)?;
+    let mut archive = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    let root = root.replace('\\', "/");
+    archive.add_directory(format!("{root}/"), options)?;
+    let mut entries = 0u64;
+    let mut pending: Vec<(PathBuf, String, usize)> = vec![(source.to_path_buf(), root, 1)];
+    while let Some((dir, prefix, depth)) = pending.pop() {
+        if depth > MAX_ZIP_DEPTH {
+            bail!("folders are nested too deeply");
+        }
+        let mut children: Vec<_> = std::fs::read_dir(&dir)?.flatten().collect();
+        children.sort_by_key(|entry| entry.file_name());
+        for child in children {
+            let Ok(kind) = child.file_type() else { continue };
+            if kind.is_symlink() {
+                continue;
+            }
+            entries += 1;
+            if entries > MAX_ZIP_ENTRIES {
+                bail!("the folder has too many files");
+            }
+            let name = format!("{prefix}/{}", child.file_name().to_string_lossy());
+            if kind.is_dir() {
+                archive.add_directory(format!("{name}/"), options)?;
+                pending.push((child.path(), name, depth + 1));
+            } else if kind.is_file() {
+                let mut input = std::fs::File::open(child.path())?;
+                let big = input.metadata().map(|m| m.len() >= 0xFFFF_FFFF).unwrap_or(false);
+                archive.start_file(name, options.large_file(big))?;
+                std::io::copy(&mut input, &mut archive)?;
+            }
+        }
+    }
+    archive.finish()?.sync_all()?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------- helpers
 
 fn random_token() -> String {
@@ -848,6 +1131,7 @@ mod tests {
         *shared.webdrop.lock().unwrap() = Some(WebDropSession {
             id: 1,
             stop: stop.clone(),
+            offers: Arc::new(Mutex::new(Vec::new())),
         });
         tokio::spawn(serve(shared.clone(), listener, TOKEN.into(), 1, stop.clone(), ttl));
         (addr, stop)
@@ -1320,6 +1604,162 @@ mod tests {
         assert!(parse_folder_path("abcdef0123").is_none());
         let deep = format!("abcdef0123/{}", vec!["d"; MAX_FOLDER_DEPTH + 1].join("/"));
         assert!(parse_folder_path(&deep).is_none());
+    }
+
+    async fn http_get(addr: SocketAddr, token: &str, path: &str) -> (u16, String, Vec<u8>) {
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        stream
+            .write_all(format!("GET /{token}/{path} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut out = Vec::new();
+        stream.read_to_end(&mut out).await.unwrap();
+        let split = out.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        let head = String::from_utf8_lossy(&out[..split]).to_string();
+        let status = head.split(' ').nth(1).unwrap().parse().unwrap();
+        (status, head, out[split + 4..].to_vec())
+    }
+
+    fn last_offers(rx: &Receiver<Event>) -> Option<Vec<WebDropOffer>> {
+        rx.try_iter()
+            .filter_map(|event| match event {
+                Event::WebDropOffers(list) => Some(list),
+                _ => None,
+            })
+            .last()
+    }
+
+    async fn offered_list(addr: SocketAddr) -> serde_json::Value {
+        let (status, _, body) = http_get(addr, TOKEN, "offers").await;
+        assert_eq!(status, 200);
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn only_offered_files_and_folders_can_be_downloaded() {
+        let tmp = TempDir::new();
+        let (shared, rx) = test_shared(&tmp.0.join("inbox"));
+        let (addr, _stop) = serve_for_test(&shared, Duration::from_secs(60)).await;
+
+        // Nothing is offered yet, so the list is empty and nothing can be fetched.
+        assert_eq!(offered_list(addr).await, serde_json::json!([]));
+
+        let src = tmp.0.join("src");
+        std::fs::create_dir_all(src.join("Album/live")).unwrap();
+        let doc = src.join("r\u{e9}sum\u{e9} \"v2\".txt");
+        std::fs::write(&doc, b"hello phone").unwrap();
+        std::fs::write(src.join("Album/a.txt"), b"alpha").unwrap();
+        std::fs::write(src.join("Album/live/b.bin"), vec![7u8; 100_000]).unwrap();
+        std::fs::write(src.join("secret.txt"), b"never offered").unwrap();
+
+        offer(&shared, vec![doc.clone(), src.join("Album"), src.join("missing.txt"), doc.clone()]).await;
+        let infos = last_offers(&rx).unwrap();
+        assert_eq!(infos.len(), 2, "the missing path is skipped and the repeat is not added twice");
+        assert!(infos[0].name.starts_with("r\u{e9}sum\u{e9}") && !infos[0].is_dir);
+        assert_eq!(infos[0].size, 11);
+        assert!(infos[1].is_dir);
+        assert_eq!(infos[1].name, "Album");
+        assert_eq!(infos[1].size, 100_005);
+
+        let list = offered_list(addr).await;
+        assert_eq!(list.as_array().unwrap().len(), 2);
+        let file_id = list[0]["id"].as_str().unwrap().to_string();
+        let dir_id = list[1]["id"].as_str().unwrap().to_string();
+        assert_eq!(list[0]["name"], "r\u{e9}sum\u{e9} \"v2\".txt", "names survive JSON escaping");
+        assert_eq!(list[1]["dir"], true);
+        assert!(list.to_string().find(&tmp.0.to_string_lossy().to_string()).is_none(), "paths never leave the PC");
+
+        // The file arrives byte for byte, with a safe download name.
+        let (status, head, body) = http_get(addr, TOKEN, &format!("get/{file_id}")).await;
+        assert_eq!(status, 200);
+        assert_eq!(body, b"hello phone");
+        assert!(head.contains("Content-Length: 11"), "{head}");
+        assert!(head.contains("attachment; filename=\"r_sum_ _v2_.txt\""), "{head}");
+        assert!(head.contains("filename*=UTF-8''r%C3%A9sum%C3%A9%20%22v2%22.txt"), "{head}");
+
+        // The folder arrives as a zip with its structure under one top-level folder.
+        let (status, head, body) = http_get(addr, TOKEN, &format!("get/{dir_id}")).await;
+        assert_eq!(status, 200);
+        assert!(head.contains("filename=\"Album.zip\""), "{head}");
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(body)).unwrap();
+        let mut names: Vec<String> = (0..archive.len()).map(|i| archive.by_index(i).unwrap().name().to_string()).collect();
+        names.sort();
+        assert_eq!(names, vec!["Album/", "Album/a.txt", "Album/live/", "Album/live/b.bin"]);
+        let mut inner = String::new();
+        std::io::Read::read_to_string(&mut archive.by_name("Album/a.txt").unwrap(), &mut inner).unwrap();
+        assert_eq!(inner, "alpha");
+
+        // Everything else is unreachable: unknown ids, odd ids, paths, wrong token.
+        for path in ["get/1", "get/ffffffffffffffff", "get/zz", "get/", "get/..%2Fsecret.txt", "get/../secret.txt", "get/00000000000000000"] {
+            let (status, _, _) = http_get(addr, TOKEN, path).await;
+            assert_eq!(status, 404, "{path}");
+        }
+        let (status, _, _) = http_get(addr, "ffffffffffffffffffffffffffffffff", &format!("get/{file_id}")).await;
+        assert_eq!(status, 404);
+        let (status, _, _) = http_get(addr, "ffffffffffffffffffffffffffffffff", "offers").await;
+        assert_eq!(status, 404);
+
+        // Taking an item off the page makes it unreachable straight away.
+        let withdrawn = infos[0].id;
+        withdraw(&shared, withdrawn);
+        assert_eq!(last_offers(&rx).unwrap().len(), 1);
+        let (status, _, _) = http_get(addr, TOKEN, &format!("get/{file_id}")).await;
+        assert_eq!(status, 404);
+        assert_eq!(offered_list(addr).await.as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn offers_go_away_with_the_session_and_need_one() {
+        let tmp = TempDir::new();
+        let (shared, rx) = test_shared(&tmp.0.join("inbox"));
+        let file = tmp.0.join("note.txt");
+        std::fs::write(&file, b"x").unwrap();
+
+        // No page open: nothing is offered, and the user is told why.
+        offer(&shared, vec![file.clone()]).await;
+        assert!(last_offers(&rx).is_none());
+
+        let (addr, stop) = serve_for_test(&shared, Duration::from_secs(60)).await;
+        offer(&shared, vec![file]).await;
+        let id = format!("{:x}", last_offers(&rx).unwrap()[0].id);
+        assert_eq!(http_get(addr, TOKEN, &format!("get/{id}")).await.0, 200);
+
+        stop_session_by_id(&shared, 1);
+        stop.notify_one();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(session_offers(&shared).is_none(), "the list is gone with the session");
+        assert!(TcpStream::connect(addr).await.is_err(), "and so is the door");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn links_are_not_offered_or_followed() {
+        let tmp = TempDir::new();
+        let (shared, rx) = test_shared(&tmp.0.join("inbox"));
+        let (addr, _stop) = serve_for_test(&shared, Duration::from_secs(60)).await;
+        let outside = tmp.0.join("outside.txt");
+        std::fs::write(&outside, b"private").unwrap();
+        let folder = tmp.0.join("Docs");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("ok.txt"), b"ok").unwrap();
+        std::os::unix::fs::symlink(&outside, folder.join("link.txt")).unwrap();
+        std::os::unix::fs::symlink(&outside, tmp.0.join("direct-link.txt")).unwrap();
+
+        offer(&shared, vec![tmp.0.join("direct-link.txt"), folder]).await;
+        let infos = last_offers(&rx).unwrap();
+        assert_eq!(infos.len(), 1, "a link cannot be offered directly");
+        let (status, _, body) = http_get(addr, TOKEN, &format!("get/{:x}", infos[0].id)).await;
+        assert_eq!(status, 200);
+        let archive = zip::ZipArchive::new(std::io::Cursor::new(body)).unwrap();
+        let names: Vec<&str> = archive.file_names().collect();
+        assert!(names.contains(&"Docs/ok.txt") && !names.iter().any(|n| n.contains("link")), "{names:?}");
+    }
+
+    #[test]
+    fn download_name_helpers() {
+        assert_eq!(json_escape("a\"b\\c\n\u{1}"), "a\\\"b\\\\c\\n\\u0001".replace("\\n", "\\u000a"));
+        assert_eq!(ascii_file_name("caf\u{e9} \"x\"; 50%.txt"), "caf_ _x__ 50_.txt");
+        assert_eq!(percent_encode("a b/\u{e9}.txt"), "a%20b%2F%C3%A9.txt");
     }
 
     #[test]

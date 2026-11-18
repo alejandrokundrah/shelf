@@ -166,6 +166,16 @@ textarea:focus { outline: 2px solid var(--primary); outline-offset: 1px; border-
 .btn-primary[disabled] { opacity: .38; box-shadow: none; cursor: default; }
 .compose .btn-primary { margin-top: 0; width: 100%; height: 48px; border-radius: 24px; }
 
+/* Items the PC has shared with the phone */
+.save {
+  flex: none; display: inline-flex; align-items: center; height: 40px; padding: 0 18px; border-radius: 20px;
+  background: var(--primary-container); color: var(--on-primary-container); text-decoration: none;
+  font-size: 14px; font-weight: 500; letter-spacing: .1px;
+}
+.save:active { opacity: .7; }
+#offers { margin-bottom: 20px; }
+#offers .head { margin-top: 4px; }
+
 .foot { margin: 20px 8px 0; color: var(--on-variant); font-size: 12px; line-height: 16px; text-align: center; }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 </style>
@@ -176,11 +186,16 @@ textarea:focus { outline: 2px solid var(--primary); outline-offset: 1px; border-
     <div class="logo" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 18c1.1 0 1.99-.9 1.99-2L22 6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z"/></svg></div>
     <div>
       <h1>Send to {{NAME}}</h1>
-      <p class="sub">Photos, files, folders and text go straight to that PC.</p>
+      <p class="sub">Send photos, files, folders and text to that PC, or save what it shares with you.</p>
     </div>
   </header>
 
   <div id="banner" class="banner" role="alert" hidden></div>
+
+  <section id="offers" hidden>
+    <div class="head"><h2>From this PC</h2><span id="offerCount" class="chip"></span></div>
+    <ul id="offerList"></ul>
+  </section>
 
   <label class="drop" id="drop">
     <input id="files" class="sr" type="file" multiple>
@@ -558,6 +573,63 @@ textarea:focus { outline: 2px solid var(--primary); outline-offset: 1px; border-
     updateNote();
     push(addText(text));
   });
+
+  // ---- items the PC shares with the phone
+
+  var offersBox = document.getElementById("offers");
+  var offerList = document.getElementById("offerList");
+  var offerCount = document.getElementById("offerCount");
+  var offerKey = "[]", offerTimer = 0;
+
+  function renderOffers(items) {
+    var key = JSON.stringify(items);
+    if (key === offerKey) return;       // leave the list alone while nothing changed
+    offerKey = key;
+    offerList.innerHTML = "";
+    items.forEach(function (it) {
+      var li = document.createElement("li");
+      li.className = "item";
+      var lead = document.createElement("span");
+      lead.className = "lead";
+      lead.innerHTML = svg(it.dir ? ICON.folder : ICON.file);
+      var body = document.createElement("div");
+      body.className = "body";
+      var name = document.createElement("div");
+      name.className = "name";
+      name.textContent = it.name;
+      var meta = document.createElement("div");
+      meta.className = "meta";
+      var info = document.createElement("span");
+      info.textContent = it.dir ? "Folder as .zip · " + size(it.size) : size(it.size);
+      meta.appendChild(info);
+      body.appendChild(name); body.appendChild(meta);
+      var save = document.createElement("a");
+      save.className = "save";
+      save.textContent = "Save";
+      save.href = base + "/get/" + encodeURIComponent(it.id);
+      save.setAttribute("download", it.dir ? it.name + ".zip" : it.name);
+      li.appendChild(lead); li.appendChild(body); li.appendChild(save);
+      offerList.appendChild(li);
+    });
+    offersBox.hidden = items.length === 0;
+    offerCount.textContent = items.length === 1 ? "1 item" : items.length + " items";
+  }
+
+  function pollOffers() {
+    var xhr = new XMLHttpRequest();
+    xhr.open("GET", base + "/offers");
+    xhr.onload = function () {
+      if (xhr.status === 200) {
+        try { renderOffers(JSON.parse(xhr.responseText)); } catch (e) { /* keep what is shown */ }
+      } else if (xhr.status === 404) {
+        clearInterval(offerTimer);
+        showBanner("This link has expired. Scan the QR code on the PC again.");
+      }
+    };
+    xhr.send();   // a network error is ignored; the next poll tries again
+  }
+  offerTimer = setInterval(function () { if (!document.hidden) pollOffers(); }, 3000);
+  pollOffers();
 
   // ---- wiring
 
