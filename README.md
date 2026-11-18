@@ -18,6 +18,7 @@ network connection.
 - Cancel transfers individually from their own progress row; interrupted large files resume from the completed portion after a reconnect.
 - Right-click files or folders in Explorer and choose **Send with Shelf** instead of dragging them to the edge.
 - Show a QR code that lets a phone send photos and files to the shelf from its browser, with nothing to install.
+- Use the shelf as a stash when no device is online: drop files and folders on it, keep them as long as you like, and drag them out into any app later.
 - Detect duplicate content and avoid creating duplicate received items.
 - Preview received images and PDFs in the item list, with a quick text peek for received text.
 - Windows notifications for received items.
@@ -64,6 +65,18 @@ Pairing is required before devices can exchange data.
 - Received files can be revealed in Explorer.
 - Items expire after one hour by default.
 - Use **Pause receiving** to reject new incoming transfers.
+
+## Use it as a stash
+
+With no paired device online, the shelf works as a personal stash. Drop files or folders on
+it and Shelf keeps a copy until you remove it; nothing expires and the copies survive restarts.
+
+- **Drag out:** grab the top of an item card (the hand cursor shows) and drop it in Explorer,
+  an email, a chat window or any app that accepts files. Folders work too.
+- Items stay in the stash after dragging, so you can drop them in several places. Use the
+  remove button on the card, or **Clear all**, to delete the stashed copy.
+- The originals are never moved or changed. If a device is online, drops are sent to it as usual.
+- Stashed items live in `%LOCALAPPDATA%\Shelf\stash`.
 
 ## Send from your phone
 
