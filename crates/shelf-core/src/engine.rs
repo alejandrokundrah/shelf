@@ -9,7 +9,7 @@ use crate::protocol::{
 };
 use crate::store::{inbox_dir, Config, DeviceGroup, PairedPeer, Room, RoomUpdate, Submission};
 use anyhow::{anyhow, bail, Context, Result};
-use flate2::{read::GzDecoder, write::GzEncoder, Compression};
+use flate2::read::GzDecoder;
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use rand::Rng;
 use sha2::{Digest, Sha256};
@@ -2196,12 +2196,11 @@ async fn send_file(
         cleanup_transfer(&prepared);
         bail!("file is too large");
     }
-    // The receiver is told about the file only once this hash is in the header, so it is the
-    // one step before the first byte that grows with file size. A hash computed earlier for
-    // the same file is reused; archives built for folders are new files and are hashed here.
+    // The receiver is told about the file only once this id is in the header. Big files use a
+    // quick fingerprint (see `file_id`); an id computed earlier for the same file is reused.
     let hash: [u8; 32] = match known_hash {
         Some(hash) if !prepared.temporary => hash,
-        _ => match hash_file(&source_path).await {
+        _ => match file_id(&source_path, room_id.is_some()).await {
             Ok(hash) => hash,
             Err(error) => {
                 cleanup_transfer(&prepared);
@@ -2296,11 +2295,11 @@ fn create_zip(source: &Path, entry_name: &str, folder: bool) -> Result<PathBuf> 
     let archive_path = transfer_temp_path("zip");
     let file = std::fs::File::create(&archive_path)?;
     let mut zip = zip::ZipWriter::new(file);
+    // Folders are packed into one archive without compressing: on a local network the
+    // transfer is rarely slower than the CPU time compression would cost, and
+    // preparation then only has to copy the files.
     let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated)
-        // Folder transfers are still compressed, but use the fastest Deflate
-        // level so preparation does not delay the first network byte.
-        .compression_level(Some(1));
+        .compression_method(zip::CompressionMethod::Stored);
     if folder {
         add_directory_to_zip(&mut zip, source, source, options)?;
     } else {
@@ -2342,26 +2341,19 @@ fn cleanup_transfer(prepared: &PreparedTransfer) {
     }
 }
 
-fn compress_text(bytes: &[u8]) -> Result<(Vec<u8>, bool)> {
-    let mut compressed = Vec::new();
-    let mut encoder = GzEncoder::new(&mut compressed, Compression::default());
-    encoder.write_all(bytes)?;
-    encoder.finish()?;
-    if compressed.len() < bytes.len() {
-        Ok((compressed, true))
-    } else {
-        Ok((bytes.to_vec(), false))
-    }
+/// Text is sent as-is (at most 1 MB). Receivers still accept gzip text from older versions.
+fn prepare_text(bytes: &[u8]) -> Result<(Vec<u8>, bool)> {
+    Ok((bytes.to_vec(), false))
 }
 
 async fn send_payload(shared: Arc<Shared>, targets: Vec<Dest>, payload: Payload) {
-    // Hash each plain file once instead of once per destination.
+    // Work out each plain file's id once instead of once per destination.
     let mut file_hashes: HashMap<PathBuf, [u8; 32]> = HashMap::new();
     if let Payload::Files(paths) = &payload {
         if targets.len() > 1 {
             for path in paths {
                 if path.is_file() {
-                    if let Ok(hash) = hash_file(path).await {
+                    if let Ok(hash) = file_id(path, false).await {
                         file_hashes.insert(path.clone(), hash);
                     }
                 }
@@ -2387,7 +2379,7 @@ async fn send_payload(shared: Arc<Shared>, targets: Vec<Dest>, payload: Payload)
                 let res = if bytes.len() as u64 > MAX_TEXT_BYTES {
                     Err(anyhow!("text is larger than 1 MB"))
                 } else {
-                    match compress_text(bytes) {
+                    match prepare_text(bytes) {
                         Ok((payload_bytes, compressed)) => {
                             let header = ItemHeader {
                                 kind: ItemKind::Text,
@@ -2548,6 +2540,62 @@ async fn send_room_files(
     }
 }
 
+/// Files at least this big are announced with a quick fingerprint instead of a full hash, so the
+/// receiver hears about them at once instead of after one full read of the file.
+const FAST_ID_MIN_BYTES: u64 = 64 * 1024 * 1024;
+const FINGERPRINT_BLOCK: usize = 64 * 1024;
+const FINGERPRINT_SAMPLES: u64 = 16;
+
+/// Stand-in for the content hash of a big file: SHA-256 over the size, the modified time and
+/// 16 evenly spaced 64 KiB blocks (first and last included). Reads about 1 MiB, however big the file.
+fn sample_fingerprint(path: &Path) -> Result<[u8; 32]> {
+    use std::io::{Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)
+        .with_context(|| format!("could not read file: {}", path.display()))?;
+    let meta = file.metadata()?;
+    let size = meta.len();
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|elapsed| elapsed.as_nanos() as u64)
+        .unwrap_or(0);
+    let mut hasher = Sha256::new();
+    hasher.update(b"shelf-fingerprint-v1");
+    hasher.update(size.to_le_bytes());
+    hasher.update(modified.to_le_bytes());
+    let block = FINGERPRINT_BLOCK as u64;
+    let mut buffer = vec![0u8; FINGERPRINT_BLOCK];
+    for i in 0..FINGERPRINT_SAMPLES {
+        let offset = (size - block.min(size)) * i / (FINGERPRINT_SAMPLES - 1);
+        file.seek(SeekFrom::Start(offset))?;
+        let mut filled = 0;
+        while filled < buffer.len() {
+            let count = file.read(&mut buffer[filled..])?;
+            if count == 0 {
+                break;
+            }
+            filled += count;
+        }
+        hasher.update(&buffer[..filled]);
+    }
+    Ok(hasher.finalize().into())
+}
+
+/// The id a file is announced under. Room files always use the full content hash (the room's
+/// file list is keyed by it); other big files use the quick fingerprint.
+async fn file_id(path: &Path, in_room: bool) -> Result<[u8; 32]> {
+    let size = tokio::fs::metadata(path)
+        .await
+        .with_context(|| format!("source file is unavailable: {}", path.display()))?
+        .len();
+    if in_room || size < FAST_ID_MIN_BYTES {
+        return hash_file(path).await;
+    }
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || sample_fingerprint(&path)).await?
+}
+
 /// SHA-256 of a file. Reads in large sequential blocks on a blocking thread: many small async
 /// reads are much slower on Windows (every one pays a thread hand-off and a virus-scanner hook).
 async fn hash_file(path: &Path) -> Result<[u8; 32]> {
@@ -2567,4 +2615,41 @@ async fn hash_file(path: &Path) -> Result<[u8; 32]> {
         Ok(hasher.finalize().into())
     })
     .await?
+}
+
+#[cfg(test)]
+mod fingerprint_tests {
+    use super::*;
+
+    fn temp_file(name: &str, data: &[u8]) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("shelf-fp-test-{}-{name}", std::process::id()));
+        std::fs::write(&path, data).unwrap();
+        path
+    }
+
+    #[test]
+    fn fingerprint_is_stable_and_sees_sampled_changes() {
+        let mut data = vec![7u8; 3 * 1024 * 1024];
+        let a = temp_file("a", &data);
+        let first = sample_fingerprint(&a).unwrap();
+        assert_eq!(first, sample_fingerprint(&a).unwrap());
+        // The first block is always sampled, so a change there must show.
+        data[10] ^= 0xff;
+        std::fs::write(&a, &data).unwrap();
+        assert_ne!(first, sample_fingerprint(&a).unwrap());
+        // So is the last block.
+        data[10] ^= 0xff;
+        let last = data.len() - 1;
+        data[last] ^= 0xff;
+        std::fs::write(&a, &data).unwrap();
+        assert_ne!(first, sample_fingerprint(&a).unwrap());
+        let _ = std::fs::remove_file(&a);
+    }
+
+    #[test]
+    fn fingerprint_handles_small_files() {
+        let a = temp_file("small", b"hello");
+        assert!(sample_fingerprint(&a).is_ok());
+        let _ = std::fs::remove_file(&a);
+    }
 }

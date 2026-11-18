@@ -11,13 +11,14 @@ network connection.
 - Send clipboard contents, files, and images to one, several, or all paired PCs.
 - Drag one or many files onto the shelf, including complete folders.
 - Preserve folder structure when transferring directories.
-- Compress text, files, and folders automatically when compression makes them smaller.
+- Send everything uncompressed so transfers start at once; folders are packed into a single archive without compressing it.
+- Big files (64 MB and up) are announced right away under a quick fingerprint (size, modified time and sampled blocks) instead of after a full read to hash them. Room files always use the full hash.
 - Show upload/download progress, speed, ETA, and transfer failures.
 - Pause incoming transfers while continuing to send.
 - Cancel active transfers and resume interrupted file transfers.
 - Cancel transfers individually from their own progress row; interrupted large files resume from the completed portion after a reconnect.
 - Right-click files or folders in Explorer and choose **Send with Shelf** instead of dragging them to the edge.
-- Detect duplicate content and avoid creating duplicate received items.
+- Detect duplicate content and avoid creating duplicate received items (for files of 64 MB and up, a duplicate means the same size, modified time and sampled content).
 - Preview received images and PDFs in the item list, with a quick text peek for received text.
 - Windows notifications for received items.
 - Activity log for pairing, connections, transfers, and failures.
