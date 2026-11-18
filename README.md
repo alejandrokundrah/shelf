@@ -17,6 +17,7 @@ network connection.
 - Cancel active transfers and resume interrupted file transfers.
 - Cancel transfers individually from their own progress row; interrupted large files resume from the completed portion after a reconnect.
 - Right-click files or folders in Explorer and choose **Send with Shelf** instead of dragging them to the edge.
+- Show a QR code that lets a phone send photos and files to the shelf from its browser, with nothing to install.
 - Detect duplicate content and avoid creating duplicate received items.
 - Preview received images and PDFs in the item list, with a quick text peek for received text.
 - Windows notifications for received items.
@@ -63,6 +64,29 @@ Pairing is required before devices can exchange data.
 - Received files can be revealed in Explorer.
 - Items expire after one hour by default.
 - Use **Pause receiving** to reject new incoming transfers.
+
+## Send from your phone
+
+Any phone with a camera and a browser can drop files on the shelf. The phone does not
+need Shelf installed and does not need to be paired.
+
+1. Make sure the phone and the PC are on the same Wi-Fi or network.
+2. Click the **QR** button in the round quick-action row (hover text: *Phone upload*).
+3. Scan the code with the phone camera and open the link.
+4. Tap **Choose files**, pick photos or files, and they appear on the shelf.
+
+Uploads show progress in the transfer list, can be cancelled from their row, honor
+**Pause receiving**, and skip files that are already on the shelf. Received photos get the
+usual image preview. Click the button again, or **Stop**, to close the page; it also closes
+by itself after 10 minutes. **Copy link** is there if the phone cannot scan.
+
+Phone upload is send-only: nothing on the shelf can be read back through it.
+
+> **It is not encrypted.** A phone browser cannot take part in Shelf's paired, encrypted
+> channel, so this page is plain HTTP on the local network. The only credential is a random
+> token in the link, which changes every time the page is opened. Anyone who can watch
+> traffic on that network while it is open could see the link and the files, so use it on a
+> network you trust (your own Wi-Fi, not a public one).
 
 ## Collaboration rooms
 
@@ -136,7 +160,9 @@ last known address of paired members when discovery briefly goes quiet.
 - Pairing uses a six-digit one-time code and SPAKE2.
 - Transfers use mutually authenticated Noise XX:
   X25519, ChaChaPoly, and BLAKE2s.
-- Unpaired devices are rejected.
+- Unpaired devices are rejected. The one deliberate exception is **Send from your phone**,
+  which is off until you open it, is upload-only, uses an unguessable one-time link, closes
+  after 10 minutes, and is not encrypted (see above).
 - The installer opens the Windows Firewall only for PRIVATE networks.
 - Room traffic uses the same authenticated LAN channel.
 - The device key in %LOCALAPPDATA%\\Shelf\\config.json is encrypted with Windows

@@ -26,6 +26,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::time::timeout;
 
+mod webdrop;
+
 const SERVICE_TYPE: &str = "_shelf._tcp.local.";
 const PAIR_TTL: Duration = Duration::from_secs(120);
 
@@ -101,6 +103,10 @@ pub enum Command {
         payload: Payload,
     },
     SetReceivingPaused(bool),
+    /// Opens a short-lived web page a phone can reach by scanning a QR code, to drop files on
+    /// this shelf. Answered with `Event::WebDropReady`.
+    StartWebDrop,
+    StopWebDrop,
     SetReceiveDirectory(PathBuf),
     SaveDeviceGroup(DeviceGroup),
     ExportRoomBackup {
@@ -176,6 +182,18 @@ pub enum Event {
     PairingCleared,
     PairingResult(Result<String, String>),
     Received(ReceivedItem),
+    /// The phone upload page is live at `url` for `seconds` seconds.
+    WebDropReady {
+        url: String,
+        seconds: u64,
+    },
+    /// The phone upload page was stopped or expired.
+    WebDropStopped,
+    /// A phone sent a file that is already on the shelf, so nothing new was added.
+    WebDropDuplicate {
+        name: String,
+        from: String,
+    },
     Progress {
         direction: TransferDirection,
         name: String,
@@ -229,6 +247,7 @@ struct Shared {
     receiving_paused: std::sync::atomic::AtomicBool,
     cancelled_transfers: Mutex<HashSet<String>>,
     received_hashes: Mutex<HashSet<[u8; 32]>>,
+    webdrop: Mutex<Option<webdrop::WebDropSession>>,
 }
 
 fn transfer_key(direction: TransferDirection, name: &str, peer: &str) -> String {
@@ -547,6 +566,7 @@ pub fn start(wake: impl Fn() + Send + Sync + 'static) -> Result<(Handle, Receive
         receiving_paused: std::sync::atomic::AtomicBool::new(false),
         cancelled_transfers: Mutex::new(HashSet::new()),
         received_hashes: Mutex::new(HashSet::new()),
+        webdrop: Mutex::new(None),
     });
     std::thread::Builder::new()
         .name("shelf-engine".into())
@@ -1002,6 +1022,8 @@ async fn run(shared: Arc<Shared>, mut cmd_rx: UnboundedReceiver<Command>) {
                     "Receiving resumed".into()
                 }));
             }
+            Command::StartWebDrop => webdrop::start(&shared).await,
+            Command::StopWebDrop => webdrop::stop(&shared),
             Command::SetReceiveDirectory(path) => {
                 let result = {
                     let mut config = shared.config.lock().unwrap();
