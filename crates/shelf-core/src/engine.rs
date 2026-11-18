@@ -2187,7 +2187,10 @@ async fn send_file(
     known_hash: Option<[u8; 32]>,
 ) -> Result<()> {
     clear_cancelled(shared, TransferDirection::Upload, label, &dest.name);
-    let prepared = prepare_transfer(path, label)?;
+    let prepared = {
+        let (path, label) = (path.to_path_buf(), label.to_string());
+        tokio::task::spawn_blocking(move || prepare_transfer(&path, &label)).await??
+    };
     let source_path = prepared.path.clone();
     let meta = tokio::fs::metadata(&source_path)
         .await
@@ -2256,12 +2259,15 @@ struct PreparedTransfer {
 }
 
 fn transfer_temp_path(extension: &str) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
+    // Sends to several devices run at once, so the clock alone could repeat.
+    let serial = NEXT.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!(
-        "shelf-transfer-{}-{stamp}.{extension}",
+        "shelf-transfer-{}-{stamp}-{serial}.{extension}",
         std::process::id()
     ))
 }
@@ -2360,8 +2366,28 @@ async fn send_payload(shared: Arc<Shared>, targets: Vec<Dest>, payload: Payload)
             }
         }
     }
+    // Every device gets its own transfer at the same time, so none waits for another.
+    let payload = Arc::new(payload);
+    let file_hashes = Arc::new(file_hashes);
+    let mut tasks = tokio::task::JoinSet::new();
     for dest in targets {
-        match &payload {
+        tasks.spawn(send_payload_to(
+            shared.clone(),
+            dest,
+            payload.clone(),
+            file_hashes.clone(),
+        ));
+    }
+    while tasks.join_next().await.is_some() {}
+}
+
+async fn send_payload_to(
+    shared: Arc<Shared>,
+    dest: Dest,
+    payload: Arc<Payload>,
+    file_hashes: Arc<HashMap<PathBuf, [u8; 32]>>,
+) {
+        match &*payload {
             Payload::Files(paths) => {
                 for path in paths {
                     let label = path
@@ -2420,7 +2446,6 @@ async fn send_payload(shared: Arc<Shared>, targets: Vec<Dest>, payload: Payload)
                 shared.finish_send(&dest.name, label, res);
             }
         }
-    }
 }
 
 fn room_targets(shared: &Arc<Shared>, room_id: &str) -> Vec<Dest> {
@@ -2467,19 +2492,25 @@ async fn send_room_file(
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| "file".to_string());
     let file_hash = hash_file(&path).await.ok();
+    let mut tasks = tokio::task::JoinSet::new();
     for dest in targets {
-        let result = send_file(
-            &shared,
-            &dest,
-            &path,
-            &label,
-            Some(&room_id),
-            submission.as_deref(),
-            file_hash,
-        )
-        .await;
-        shared.finish_send(&dest.name, label.clone(), result);
+        let (shared, path, label) = (shared.clone(), path.clone(), label.clone());
+        let (room_id, submission) = (room_id.clone(), submission.clone());
+        tasks.spawn(async move {
+            let result = send_file(
+                &shared,
+                &dest,
+                &path,
+                &label,
+                Some(&room_id),
+                submission.as_deref(),
+                file_hash,
+            )
+            .await;
+            shared.finish_send(&dest.name, label, result);
+        });
     }
+    while tasks.join_next().await.is_some() {}
     if let Some(hash) = file_hash {
         let mut config = shared.config.lock().unwrap();
         let uploader = config.device_name.clone();
