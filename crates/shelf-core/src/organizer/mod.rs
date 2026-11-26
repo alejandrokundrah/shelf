@@ -36,11 +36,15 @@ pub enum Category {
     Documents,
     Audio,
     Video,
+    Design,
+    Code,
+    Models3d,
+    Fonts,
     Other,
 }
 
 impl Category {
-    pub const ALL: [Category; 8] = [
+    pub const ALL: [Category; 12] = [
         Category::Images,
         Category::Pdfs,
         Category::Installers,
@@ -48,6 +52,10 @@ impl Category {
         Category::Documents,
         Category::Audio,
         Category::Video,
+        Category::Design,
+        Category::Code,
+        Category::Models3d,
+        Category::Fonts,
         Category::Other,
     ];
 
@@ -61,6 +69,10 @@ impl Category {
             Category::Documents => "Documents",
             Category::Audio => "Audio",
             Category::Video => "Video",
+            Category::Design => "Design",
+            Category::Code => "Code",
+            Category::Models3d => "3D",
+            Category::Fonts => "Fonts",
             Category::Other => "Other",
         }
     }
@@ -80,6 +92,18 @@ impl Category {
             | "odp" | "csv" | "md" => Category::Documents,
             "mp3" | "wav" | "flac" | "aac" | "ogg" | "m4a" | "wma" => Category::Audio,
             "mp4" | "mkv" | "mov" | "avi" | "webm" | "wmv" | "flv" => Category::Video,
+            // Design source files: Photoshop, Illustrator, Affinity, Figma, Sketch, XD, InDesign…
+            "psd" | "psb" | "ai" | "eps" | "af" | "afphoto" | "afdesign" | "afpub" | "xd"
+            | "fig" | "sketch" | "indd" | "idml" | "xcf" | "kra" | "cdr" | "procreate" => {
+                Category::Design
+            }
+            "rs" | "ts" | "tsx" | "js" | "jsx" | "mjs" | "py" | "ipynb" | "java" | "kt" | "c"
+            | "h" | "cpp" | "hpp" | "cc" | "cs" | "go" | "rb" | "php" | "swift" | "lua" | "sh"
+            | "bat" | "ps1" | "sql" | "html" | "htm" | "css" | "scss" | "vue" | "json" | "xml"
+            | "yml" | "yaml" | "toml" | "gradle" => Category::Code,
+            "glb" | "gltf" | "obj" | "fbx" | "stl" | "blend" | "3ds" | "dae" | "usdz" | "usd"
+            | "ply" | "3mf" | "step" | "stp" => Category::Models3d,
+            "ttf" | "otf" | "woff" | "woff2" | "eot" | "ttc" | "fon" => Category::Fonts,
             _ => Category::Other,
         }
     }
@@ -581,7 +605,19 @@ pub struct Config {
     /// `false` = preview mode: the watcher only proposes plans and waits.
     pub auto_apply: bool,
     pub rules: Vec<Rule>,
+    /// Which set of built-in sort rules this config already has. Older saved
+    /// configs are topped up with any newer defaults when loaded. A config
+    /// saved before this field existed reads as version 0.
+    #[serde(default = "no_defaults_version")]
+    pub defaults_version: u32,
 }
+
+fn no_defaults_version() -> u32 {
+    0
+}
+
+/// Bump when `default_rules()` gains categories.
+const DEFAULTS_VERSION: u32 = 2;
 
 impl Default for Config {
     fn default() -> Self {
@@ -590,7 +626,28 @@ impl Default for Config {
             watching: false,
             auto_apply: false,
             rules: default_rules(),
+            defaults_version: DEFAULTS_VERSION,
         }
+    }
+}
+
+impl Config {
+    /// Adds built-in sort rules this config doesn't have yet, after the
+    /// user's own rules. Never changes or removes an existing rule, and
+    /// skips a default the user already has an equivalent of (or deleted
+    /// before this version existed is indistinguishable, so those return).
+    fn add_missing_defaults(&mut self) -> bool {
+        if self.defaults_version >= DEFAULTS_VERSION {
+            return false;
+        }
+        for default in default_rules() {
+            if !self.rules.iter().any(|r| r.conditions == default.conditions) {
+                let id = next_rule_id(&self.rules);
+                self.rules.push(Rule { id, ..default });
+            }
+        }
+        self.defaults_version = DEFAULTS_VERSION;
+        true
     }
 }
 
@@ -620,10 +677,15 @@ impl Organizer {
         settle: Duration,
     ) -> Organizer {
         let _ = std::fs::create_dir_all(&dir);
-        let config: Config = std::fs::read(dir.join("config.json"))
+        let mut config: Config = std::fs::read(dir.join("config.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
+        if config.add_missing_defaults() {
+            if let Ok(bytes) = serde_json::to_vec_pretty(&config) {
+                let _ = std::fs::write(dir.join("config.json"), bytes);
+            }
+        }
         let journal = Journal::load(&dir);
         let (tx, rx) = mpsc::channel();
         let mut organizer = Organizer {

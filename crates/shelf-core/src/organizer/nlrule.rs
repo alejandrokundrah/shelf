@@ -64,6 +64,12 @@ fn category_word(w: &str) -> Option<Category> {
         | "excel" | "powerpoint" | "slides" => Category::Documents,
         "song" | "songs" | "music" | "audio" => Category::Audio,
         "video" | "videos" | "movie" | "movies" => Category::Video,
+        "font" | "fonts" | "typeface" | "typefaces" => Category::Fonts,
+        "code" | "script" | "scripts" | "source" => Category::Code,
+        "3d" | "model" | "models" | "mesh" | "meshes" => Category::Models3d,
+        "psd" | "psds" | "photoshop" | "illustrator" | "affinity" | "figma" | "sketch" => {
+            Category::Design
+        }
         _ => return None,
     })
 }

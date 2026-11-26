@@ -470,3 +470,76 @@ fn describe_is_readable() {
     let d = r.describe();
     assert!(d.contains("PDFs") && d.contains("school") && d.contains("Study"), "{d}");
 }
+
+// --- more file types ---------------------------------------------------
+
+#[test]
+fn design_code_3d_and_font_files_are_categorised() {
+    for e in ["psd", "AI", "afphoto", "afdesign", "af", "fig", "xd", "sketch"] {
+        assert_eq!(Category::of_ext(e), Category::Design, "{e}");
+    }
+    for e in ["rs", "ts", "py", "js", "html", "json", "sh"] {
+        assert_eq!(Category::of_ext(e), Category::Code, "{e}");
+    }
+    for e in ["glb", "gltf", "obj", "fbx", "stl", "blend"] {
+        assert_eq!(Category::of_ext(e), Category::Models3d, "{e}");
+    }
+    for e in ["ttf", "otf", "woff", "woff2"] {
+        assert_eq!(Category::of_ext(e), Category::Fonts, "{e}");
+    }
+}
+
+#[test]
+fn new_categories_get_sorted_by_default_rules() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dl = tmp.path().join("dl");
+    fs::create_dir(&dl).unwrap();
+    let files: Vec<PathBuf> = ["poster.psd", "logo.afdesign", "main.rs", "model.glb", "Inter.ttf"]
+        .iter()
+        .map(|n| write(&dl, n, b"x"))
+        .collect();
+    let org = organizer(tmp.path());
+    let (done, failed) = org.apply_all(&org.plan_paths(&files, None, &dl));
+    assert_eq!(done.len(), 5);
+    assert!(failed.is_empty());
+    for (folder, name) in [("Design", "poster.psd"), ("Design", "logo.afdesign"), ("Code", "main.rs"), ("3D", "model.glb"), ("Fonts", "Inter.ttf")] {
+        assert!(dl.join(folder).join(name).exists(), "{folder}/{name}");
+    }
+}
+
+#[test]
+fn old_saved_config_gains_the_new_default_rules_without_losing_edits() {
+    let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().join("data");
+    fs::create_dir(&data).unwrap();
+    // A v1 config: only the original seven sort rules, one of them customised, plus a user rule.
+    let mut old = default_rules().into_iter().take(7).collect::<Vec<_>>();
+    old[1].actions = vec![Action::MoveTo("My Pictures".into())];
+    old.insert(0, Rule {
+        id: 99, name: "mine".into(), enabled: true,
+        conditions: vec![Condition::NameContains("school".into())],
+        actions: vec![Action::MoveTo("Study".into())],
+    });
+    let json = serde_json::json!({ "watch_folder": null, "watching": false, "auto_apply": false, "rules": old });
+    fs::write(data.join("config.json"), serde_json::to_vec(&json).unwrap()).unwrap();
+
+    let org = organizer(tmp.path());
+    let cfg = org.config();
+    let has = |c: Category| cfg.rules.iter().any(|r| r.conditions == vec![Condition::Category(c)]);
+    assert!(has(Category::Design) && has(Category::Code) && has(Category::Models3d) && has(Category::Fonts));
+    assert_eq!(cfg.rules[0].name, "mine", "user rule keeps its place");
+    assert_eq!(cfg.rules[2].actions, vec![Action::MoveTo("My Pictures".into())], "edit kept");
+    let ids: std::collections::HashSet<u64> = cfg.rules.iter().map(|r| r.id).collect();
+    assert_eq!(ids.len(), cfg.rules.len(), "rule ids stay unique");
+    // Reopening does not add them twice.
+    drop(org);
+    assert_eq!(organizer(tmp.path()).config().rules.len(), cfg.rules.len());
+}
+
+#[test]
+fn nl_understands_the_new_types() {
+    assert!(parse("put fonts in Fonts").conditions.contains(&Condition::Category(Category::Fonts)));
+    assert!(parse("move 3d models to Assets").conditions.contains(&Condition::Category(Category::Models3d)));
+    assert!(parse("sort code into Projects").conditions.contains(&Condition::Category(Category::Code)));
+    assert!(parse("put psd files in Work").conditions.contains(&Condition::Category(Category::Design)));
+}
