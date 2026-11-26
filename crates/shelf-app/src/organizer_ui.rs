@@ -167,6 +167,15 @@ impl RuleDraft {
     }
 }
 
+/// What the "waiting to be sorted" banner on the main view asked for.
+pub enum Banner {
+    /// The user pressed Apply all; here is the result line.
+    Status(String),
+    /// Open the Organizer section to look at the list.
+    Review,
+    Apply,
+}
+
 enum Act {
     PickWatchFolder,
     TidyNow,
@@ -195,6 +204,8 @@ pub struct OrganizerPanel {
     pub mode: DropMode,
     plans: Vec<Plan>,
     note: Option<String>,
+    /// Proposals that arrived since the app last asked (for the toast).
+    new_proposals: usize,
 
     // Batch image tool settings.
     img_format: Option<ImageFormat>,
@@ -237,6 +248,7 @@ impl OrganizerPanel {
             mode: DropMode::Send,
             plans: Vec::new(),
             note: None,
+            new_proposals: 0,
             img_format: Some(ImageFormat::Webp),
             img_w: String::new(),
             img_h: String::new(),
@@ -263,6 +275,7 @@ impl OrganizerPanel {
                     if !self.plans.iter().any(|p| p.source == plan.source) {
                         message = Some(format!("Organizer: ready to sort {} (preview)", file_name(&plan.source)));
                         self.plans.push(plan);
+                        self.new_proposals += 1;
                     }
                 }
                 OrganizerEvent::Applied(entry) => {
@@ -278,6 +291,40 @@ impl OrganizerPanel {
             }
         }
         message
+    }
+
+    /// How many files were newly proposed since the last call.
+    pub fn take_new_proposals(&mut self) -> usize {
+        std::mem::take(&mut self.new_proposals)
+    }
+
+    /// A small card for the main view while files are waiting for approval,
+    /// so nobody has to dig into settings to find them.
+    pub fn pending_banner(&mut self, ui: &mut egui::Ui) -> Option<Banner> {
+        let n = self.plans.len();
+        if n == 0 {
+            return None;
+        }
+        let p = pal();
+        let mut out = None;
+        card(ui, |ui| {
+            ui.label(semibold(&format!("{n} file(s) waiting to be sorted"), 13.5).color(p.text));
+            ui.horizontal(|ui| {
+                if capsule(ui, "Apply all", Look::Primary, 26.0, None, true).clicked() {
+                    out = Some(Banner::Apply);
+                }
+                if capsule(ui, "Review", Look::Glass, 26.0, None, true).clicked() {
+                    out = Some(Banner::Review);
+                }
+            });
+        });
+        match out {
+            Some(Banner::Apply) => {
+                let all: Vec<usize> = (0..n).collect();
+                Some(Banner::Status(self.apply_plans(all)))
+            }
+            other => other,
+        }
     }
 
     /// Files dropped on the shelf while the mode is not "Send".
@@ -439,6 +486,15 @@ impl OrganizerPanel {
                     RichText::new("New files are moved automatically. Everything can be undone below.")
                         .size(11.5)
                         .color(p.text2),
+                );
+            } else if cfg.watching {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new("New files wait for your OK. Turn off \"Ask me first\" to sort them automatically.")
+                            .size(11.5)
+                            .color(p.text2),
+                    )
+                    .wrap(),
                 );
             }
         });

@@ -2249,6 +2249,15 @@ fn m3_receive_notch(ui: &mut egui::Ui, receiving: Option<&Receiving>) {
     }
 }
 
+/// Toast for files the organizer has planned but is waiting for approval on.
+fn notify_organizer_waiting(count: usize) {
+    let _ = notify_rust::Notification::new()
+        .summary("Shelf: files ready to sort")
+        .body(&format!("{count} new file(s) are waiting. Open Shelf and press Apply all."))
+        .appname("Shelf")
+        .show();
+}
+
 fn notify_arrival(item: &ReceivedItem) {
     let kind = match item.kind {
         ItemKind::File => "File",
@@ -2387,6 +2396,8 @@ struct ShelfApp {
     pair_dialog: Option<PairDialog>,
     /// Downloads organizer, batch image tool, rules and undo history.
     organizer: organizer_ui::OrganizerPanel,
+    /// Set to open the Organizer section once (the banner's Review button).
+    organizer_open_req: bool,
 
     auto_copy: bool,
     receiving_paused: bool,
@@ -2531,6 +2542,7 @@ impl ShelfApp {
             phone_offers: Vec::new(),
             pair_dialog: None,
             organizer: organizer_ui::OrganizerPanel::new(move || organizer_wake.request_repaint()),
+            organizer_open_req: false,
             auto_copy: settings.auto_copy,
             receiving_paused: false,
             pinned: settings.pinned,
@@ -3106,6 +3118,10 @@ impl eframe::App for ShelfApp {
             self.set_status(message);
             self.open_for(4);
         }
+        let waiting = self.organizer.take_new_proposals();
+        if waiting > 0 {
+            notify_organizer_waiting(waiting);
+        }
         self.poll_hotkeys();
         while let Ok(paths) = self.control_rx.try_recv() {
             self.send_paths(paths);
@@ -3505,6 +3521,17 @@ impl eframe::App for ShelfApp {
                         || self.my_code.is_some()
                         || self.pair_dialog.is_some();
 
+                    // Files the watcher found that are waiting for approval.
+                    match self.organizer.pending_banner(ui) {
+                        Some(organizer_ui::Banner::Status(message)) => self.set_status(message),
+                        Some(organizer_ui::Banner::Review) => {
+                            self.show_all_settings = true;
+                            self.organizer_open_req = true;
+                            ctx.request_repaint();
+                        }
+                        _ => {}
+                    }
+
                     // Settings.
                     card(ui, |ui| {
                         ui.label(RichText::new(tr("Send to")).size(13.5).color(p.text));
@@ -3639,9 +3666,11 @@ impl eframe::App for ShelfApp {
                     // Downloads organizer + batch image tool.
                     let organizer_message = egui::CollapsingHeader::new(semibold(tr("Organizer"), 12.5).color(p.text2))
                         .default_open(false)
+                        .open(self.organizer_open_req.then_some(true))
                         .show(ui, |ui| self.organizer.show(ui))
                         .body_returned
                         .flatten();
+                    self.organizer_open_req = false;
                     if let Some(message) = organizer_message {
                         self.set_status(message);
                     }
