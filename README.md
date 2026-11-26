@@ -19,7 +19,7 @@ network connection.
 - Right-click files or folders in Explorer and choose **Send with Shelf** instead of dragging them to the edge.
 - Show a QR code that lets a phone send photos, files, whole folders and text to the shelf from its browser, and lets the phone download files and folders you choose on the PC, with nothing to install.
 - Use the shelf as a stash when no device is online: drop files and folders on it, keep them as long as you like, and drag them out into any app later.
-- Keep a folder such as Downloads tidy: Shelf watches it and sorts new files into PDFs, Images, Installers, Archives and more, with a preview and one-click **Undo** (see **Organizer** below).
+- Keep a folder such as Downloads tidy: Shelf watches it and sorts new files into PDFs, Images, Installers, Archives, Documents, Audio, Video, Design (PSD, AI, Affinity, Figma…), Code, 3D (GLB, OBJ, FBX…) and Fonts, with a preview and one-click **Undo** (see **Organizer** below).
 - Batch image tool: drop many images and resize, convert (PNG, JPG, WebP), compress and rename them in one go.
 - Detect duplicate content and avoid creating duplicate received items.
 - Preview received images and PDFs in the item list, with a quick text peek for received text.
@@ -126,7 +126,8 @@ Open the gear (settings) and expand **Organizer**. Everything runs on your PC; n
 **A rule is conditions plus actions.** For example: *if it's an image over 2 MB, convert to WebP,
 compress, then move to Pictures/Designs.* Conditions: file type, extension, a word in the name,
 larger or smaller than a size. Actions: move, rename, resize, convert, compress. The first
-matching rule wins, so rules near the top take priority.
+matching rule wins, so rules near the top take priority. Files with a type Shelf doesn't know are left where they are; add a rule for any extension (for example `.afphoto`) in the rules form.
+
 
 ### Two ways in
 
