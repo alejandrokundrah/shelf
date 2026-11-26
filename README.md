@@ -19,6 +19,8 @@ network connection.
 - Right-click files or folders in Explorer and choose **Send with Shelf** instead of dragging them to the edge.
 - Show a QR code that lets a phone send photos, files, whole folders and text to the shelf from its browser, and lets the phone download files and folders you choose on the PC, with nothing to install.
 - Use the shelf as a stash when no device is online: drop files and folders on it, keep them as long as you like, and drag them out into any app later.
+- Keep a folder such as Downloads tidy: Shelf watches it and sorts new files into PDFs, Images, Installers, Archives and more, with a preview and one-click **Undo** (see **Organizer** below).
+- Batch image tool: drop many images and resize, convert (PNG, JPG, WebP), compress and rename them in one go.
 - Detect duplicate content and avoid creating duplicate received items.
 - Preview received images and PDFs in the item list, with a quick text peek for received text.
 - Windows notifications for received items.
@@ -116,6 +118,62 @@ followed.
 > token in the link, which changes every time the page is opened. Anyone who can watch
 > traffic on that network while it is open could see the link and the files, so use it on a
 > network you trust (your own Wi-Fi, not a public one).
+
+## Organizer: tidy Downloads and batch-process images
+
+Open the gear (settings) and expand **Organizer**. Everything runs on your PC; nothing is uploaded.
+
+**A rule is conditions plus actions.** For example: *if it's an image over 2 MB, convert to WebP,
+compress, then move to Pictures/Designs.* Conditions: file type, extension, a word in the name,
+larger or smaller than a size. Actions: move, rename, resize, convert, compress. The first
+matching rule wins, so rules near the top take priority.
+
+### Two ways in
+
+- **Automatic:** turn on **Watch for new files** for a folder (Downloads by default). A file is
+  only touched once it has finished downloading; temporary files like `.crdownload` are ignored,
+  and files already in the folder are left alone. **Tidy it now** sorts what is already there.
+- **Manual:** choose what happens when you drop files on the shelf: **Send them** (the normal
+  behaviour), **Sort with rules**, or **Image tool**. Folders are searched recursively.
+
+### Preview and Undo
+
+- **Ask me first** (on by default) shows *Here's what I'd do* for every file and waits for you to
+  Apply or Skip. Turn it off to let the watcher act on its own.
+- Every action is written to the **Undo history**. **Undo last** or the per-row **Undo** puts the
+  file back exactly where it was, removes folders the action created, and never overwrites a file
+  that has since appeared at the old location. If the file was moved or deleted again since, Undo
+  says so and changes nothing.
+- Processed images keep their original in the history's trash until you press **Clear history**
+  (or it ages out after 300 actions). Files are never overwritten: name clashes become `name (1).ext`.
+
+### Batch image tool
+
+Pick **Image tool**, choose the output format (Keep, PNG, JPG, WebP), optional max width and height
+(images are only ever shrunk, never enlarged), compression, a rename template and a destination
+folder, then drop the images. Rename templates use `{name}`, `{date}` (2026-11-25), `{n}` (001, 002, ...)
+and `{ext}`, e.g. `{date}_{name}` gives `2026-11-25_logo.webp`.
+
+Compression applies to JPEG quality. PNG and WebP output is lossless, so there it only selects the
+strongest compression. JPG has no transparency, so transparent areas become white. Readable formats
+are PNG, JPG, WebP, GIF and BMP; other files simply skip the image steps.
+
+### Rules in plain English
+
+Type a sentence into the rules box and press **Make rule**, for example:
+
+- `put school PDFs in Study`
+- `move installers under 50 MB into the Software folder`
+- `resize screenshots to 1200px wide and rename with the date`
+- `if it's an image over 2 MB convert to WebP, compress, then move to Pictures/Designs`
+
+This is a small built-in keyword parser, not an online AI service, so it works offline and sends
+nothing anywhere. It shows how it understood the sentence in the normal rule form so you can check
+and edit it before saving, and it says so when it can't tell what you mean. Folder names are relative
+to the watched folder, except `Pictures`, `Documents`, `Desktop`, `Music`, `Videos` and `Downloads`,
+which mean your own folders of those names.
+
+Organizer settings, rules and history live in `%LOCALAPPDATA%\Shelf\organizer`.
 
 ## Collaboration rooms
 
@@ -226,7 +284,8 @@ The installer output is written to installer\\Output\\Shelf-Setup.exe.
 
 ~~~text
 crates/shelf-core/       Discovery, pairing, encryption, transfer, rooms
-crates/shelf-app/        Windows edge UI and clipboard integration
+crates/shelf-core/src/organizer/  Rules, folder watcher, image tool, undo journal
+crates/shelf-app/        Windows edge UI and clipboard integration (organizer_ui.rs: Organizer panel)
 crates/shelf-app/assets/ Application icon
 installer/               Inno Setup configuration and installer icon
 .github/workflows/       GitHub Actions installer build

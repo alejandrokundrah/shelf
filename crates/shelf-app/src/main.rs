@@ -2,6 +2,7 @@
 
 mod clip;
 mod monitors;
+mod organizer_ui;
 
 use eframe::egui::{
     self, pos2, vec2, Align, Align2, Color32, FontFamily, FontId, Layout, Pos2, Rect, RichText,
@@ -2384,6 +2385,8 @@ struct ShelfApp {
     /// Files and folders the phone page currently offers for download.
     phone_offers: Vec<WebDropOffer>,
     pair_dialog: Option<PairDialog>,
+    /// Downloads organizer, batch image tool, rules and undo history.
+    organizer: organizer_ui::OrganizerPanel,
 
     auto_copy: bool,
     receiving_paused: bool,
@@ -2471,6 +2474,7 @@ impl ShelfApp {
     fn new(cc: &eframe::CreationContext<'_>, control_rx: Receiver<Vec<PathBuf>>) -> Self {
         let ctx = cc.egui_ctx.clone();
         let wake_ctx = ctx.clone();
+        let organizer_wake = ctx.clone();
         let (handle, rx) =
             shelf_core::start(move || wake_ctx.request_repaint()).expect("failed to start Shelf");
         let (clip_tx, clip_rx) = channel();
@@ -2526,6 +2530,7 @@ impl ShelfApp {
             phone_upload: None,
             phone_offers: Vec::new(),
             pair_dialog: None,
+            organizer: organizer_ui::OrganizerPanel::new(move || organizer_wake.request_repaint()),
             auto_copy: settings.auto_copy,
             receiving_paused: false,
             pinned: settings.pinned,
@@ -3097,6 +3102,10 @@ impl eframe::App for ShelfApp {
         }
 
         self.drain_events();
+        if let Some(message) = self.organizer.poll() {
+            self.set_status(message);
+            self.open_for(4);
+        }
         self.poll_hotkeys();
         while let Ok(paths) = self.control_rx.try_recv() {
             self.send_paths(paths);
@@ -3127,7 +3136,11 @@ impl eframe::App for ShelfApp {
                 .collect()
         });
         if !dropped.is_empty() {
-            if let Some(room_id) = self.active_room_id.clone() {
+            if self.organizer.mode != organizer_ui::DropMode::Send {
+                // The organizer / image tool is switched on: preview instead of sending.
+                let message = self.organizer.add_dropped(dropped);
+                self.set_status(message);
+            } else if let Some(room_id) = self.active_room_id.clone() {
                 let assignment = self.room_assignment_input.trim().to_string();
                 if assignment.is_empty() {
                     self.set_status(format!("Uploading {} file(s) to room...", dropped.len()));
@@ -3623,6 +3636,16 @@ impl eframe::App for ShelfApp {
                     });
 
                     if show_more {
+                    // Downloads organizer + batch image tool.
+                    let organizer_message = egui::CollapsingHeader::new(semibold(tr("Organizer"), 12.5).color(p.text2))
+                        .default_open(false)
+                        .show(ui, |ui| self.organizer.show(ui))
+                        .body_returned
+                        .flatten();
+                    if let Some(message) = organizer_message {
+                        self.set_status(message);
+                    }
+
                     // Collaboration rooms.
                     egui::CollapsingHeader::new(semibold(tr("Rooms"), 12.5).color(p.text2))
                         .default_open(true)
