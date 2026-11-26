@@ -825,6 +825,34 @@ impl Organizer {
         Ok(entry)
     }
 
+    /// Undoes every action that hasn't been undone, newest first (so a
+    /// folder created by an early action is only removed after what's inside
+    /// it has gone back). An action that can't be undone, for example because
+    /// the file was moved again, is skipped and reported; the rest still go
+    /// back. Returns how many were undone and the reasons for any that weren't.
+    pub fn undo_all(&self) -> (usize, Vec<String>) {
+        let mut journal = self.journal.lock().unwrap();
+        let pending: Vec<(u64, PathBuf)> = journal
+            .entries()
+            .iter()
+            .rev()
+            .filter(|e| !e.undone)
+            .map(|e| (e.id, e.source.clone()))
+            .collect();
+        let mut undone = 0;
+        let mut failed = Vec::new();
+        for (id, source) in pending {
+            match journal.undo(id) {
+                Ok(()) => undone += 1,
+                Err(e) => failed.push(format!(
+                    "{}: {e}",
+                    source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+                )),
+            }
+        }
+        (undone, failed)
+    }
+
     pub fn clear_history(&self) {
         self.journal.lock().unwrap().clear();
     }
