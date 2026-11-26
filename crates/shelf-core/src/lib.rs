@@ -4,6 +4,7 @@
 pub mod channel;
 mod dpapi;
 pub mod engine;
+pub mod organizer;
 pub mod pairing;
 pub mod protocol;
 pub mod stash;

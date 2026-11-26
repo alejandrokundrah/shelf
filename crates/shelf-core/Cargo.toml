@@ -18,3 +18,8 @@ rand = "0.8"
 dirs = "5"
 zip = "4.6"
 flate2 = "1.1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
+
+[dev-dependencies]
+tempfile = "3"
