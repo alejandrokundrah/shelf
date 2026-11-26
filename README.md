@@ -140,7 +140,9 @@ matching rule wins, so rules near the top take priority. Files with a type Shelf
 ### Preview and Undo
 
 - **Ask me first** (on by default) shows *Here's what I'd do* for every file and waits for you to
-  Apply or Skip. Turn it off to let the watcher act on its own.
+  Apply or Skip. While files wait, Shelf shows a notification and a **waiting to be sorted** card with
+  **Apply all** on the main view. Turn **Ask me first** off to let the watcher sort new files on its
+  own. The watcher only runs while Shelf is running.
 - Every action is written to the **Undo history**. **Undo all** (asks you to confirm) reverses every move at once, which is handy after a big batch; one that can't be undone, because the file has since moved, is skipped and reported while the rest go back. **Undo last** or the per-row **Undo** puts the
   file back exactly where it was, removes folders the action created, and never overwrites a file
   that has since appeared at the old location. If the file was moved or deleted again since, Undo
