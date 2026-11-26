@@ -260,6 +260,46 @@ fn undo_last_walks_back_and_survives_restart() {
 }
 
 #[test]
+fn undo_all_puts_everything_back() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dl = tmp.path().to_path_buf();
+    let originals: Vec<(PathBuf, Vec<u8>)> = (0..5)
+        .map(|i| {
+            let bytes = format!("file {i}").into_bytes();
+            (write(&dl, &format!("f{i}.pdf"), &bytes), bytes)
+        })
+        .collect();
+    let org = organizer(tmp.path());
+    let paths: Vec<PathBuf> = originals.iter().map(|(p, _)| p.clone()).collect();
+    org.apply_all(&org.plan_paths(&paths, None, &dl));
+    assert!(!originals[0].0.exists());
+
+    let (undone, failed) = org.undo_all();
+    assert_eq!((undone, failed.len()), (5, 0));
+    for (path, bytes) in &originals {
+        assert_eq!(&fs::read(path).unwrap(), bytes);
+    }
+    assert!(!dl.join("PDFs").exists(), "emptied folder is removed");
+    assert_eq!(org.undo_all(), (0, vec![]), "nothing left to undo");
+}
+
+#[test]
+fn undo_all_skips_what_cannot_be_undone_and_reports_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dl = tmp.path().to_path_buf();
+    let a = write(&dl, "a.pdf", b"a");
+    let b = write(&dl, "b.pdf", b"b");
+    let org = organizer(tmp.path());
+    let (done, _) = org.apply_all(&org.plan_paths(&[a.clone(), b.clone()], None, &dl));
+    fs::remove_file(&done[0].dest).unwrap(); // a.pdf is gone for good
+    let (undone, failed) = org.undo_all();
+    assert_eq!(undone, 1);
+    assert_eq!(failed.len(), 1);
+    assert!(failed[0].starts_with("a.pdf"), "{failed:?}");
+    assert!(b.exists());
+}
+
+#[test]
 fn undo_refuses_if_file_moved_again_and_changes_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let dl = tmp.path().to_path_buf();

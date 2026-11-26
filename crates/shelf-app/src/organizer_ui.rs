@@ -183,6 +183,9 @@ enum Act {
     CancelDraft,
     MakeFromText,
     UndoLast,
+    AskUndoAll,
+    CancelUndoAll,
+    UndoAll,
     Undo(u64),
     ClearHistory,
 }
@@ -201,6 +204,9 @@ pub struct OrganizerPanel {
     img_quality: u8,
     img_rename: String,
     img_folder: String,
+
+    /// "Undo all" was clicked once; the next click confirms.
+    confirm_undo_all: bool,
 
     // Rules editor.
     draft: Option<RuleDraft>,
@@ -238,6 +244,7 @@ impl OrganizerPanel {
             img_quality: 80,
             img_rename: String::new(),
             img_folder: "Pictures/Shelf Images".to_string(),
+            confirm_undo_all: false,
             draft: None,
             draft_error: None,
             text_rule: String::new(),
@@ -382,14 +389,30 @@ impl OrganizerPanel {
         let mut rules_changed = false;
         let history: Vec<JournalEntry> = self.org.history();
         let can_undo = history.iter().any(|e| !e.undone);
+        let undoable = history.iter().filter(|e| !e.undone).count();
+        if !can_undo {
+            self.confirm_undo_all = false;
+        }
 
         // ---- Watch Downloads ------------------------------------------------
         card(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(semibold("Watch a folder", 13.5).color(p.text));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if capsule(ui, "Undo last", Look::Glass, 26.0, None, can_undo).clicked() {
-                        acts.push(Act::UndoLast);
+                    if self.confirm_undo_all {
+                        if capsule(ui, "Cancel", Look::Glass, 26.0, None, true).clicked() {
+                            acts.push(Act::CancelUndoAll);
+                        }
+                        if capsule(ui, &format!("Yes, undo all {undoable}"), Look::Tint(p.red), 26.0, None, true).clicked() {
+                            acts.push(Act::UndoAll);
+                        }
+                    } else {
+                        if capsule(ui, "Undo all", Look::Glass, 26.0, None, undoable > 1).clicked() {
+                            acts.push(Act::AskUndoAll);
+                        }
+                        if capsule(ui, "Undo last", Look::Glass, 26.0, None, can_undo).clicked() {
+                            acts.push(Act::UndoLast);
+                        }
                     }
                 });
             });
@@ -859,6 +882,19 @@ impl OrganizerPanel {
                     status = Some(match self.org.undo_last() {
                         Ok(e) => format!("Undone: {} is back where it was", file_name(&e.source)),
                         Err(e) => format!("Couldn't undo: {e}"),
+                    });
+                }
+                Act::AskUndoAll => self.confirm_undo_all = true,
+                Act::CancelUndoAll => self.confirm_undo_all = false,
+                Act::UndoAll => {
+                    self.confirm_undo_all = false;
+                    let (undone, failed) = self.org.undo_all();
+                    status = Some(match (undone, failed.len()) {
+                        (n, 0) => format!("Undone: {n} action(s). Everything is back where it was."),
+                        (n, f) => format!(
+                            "Undone {n}; {f} could not be undone ({}). Those files were left alone.",
+                            shorten(&failed[0], 60)
+                        ),
                     });
                 }
                 Act::Undo(id) => {
